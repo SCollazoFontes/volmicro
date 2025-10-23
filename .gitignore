@@ -2,27 +2,64 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-.env/
-.venv/
+.env
+.venv
 env/
 venv/
+pip-wheel-metadata/
 
 # --- Datos locales ---
 data/
 datasets/
 *.csv
+*.png
 *.json
 *.xlsx
+*.parquet
+*.hdf5
+*.pkl
+*.feather
 
-# --- Configuración de VSCode y macOS ---
+# --- Configuración de IDEs y sistema ---
 .vscode/
+.idea/
 .DS_Store
+Thumbs.db
 
 # --- Archivos de Jupyter y logs ---
 .ipynb_checkpoints/
 *.log
+*.out
+*.err
 
-# --- Modelos o resultados grandes ---
+# --- Modelos, resultados y experimentos ---
 models/
 backtests/
 results/
+reports/
+notebooks/tmp/
+
+# --- Archivos temporales o de cache ---
+*.tmp
+*.bak
+*.swp
+*.zip
+*.tar
+*.gz
+.cache/
+__pycache__/
+tmp/
+logs/
+
+# --- Configuración de sistema o dependencias locales ---
+*.sqlite3
+*.db
+local_settings.py
+
+# --- Archivos de control de versiones de datos (si usas DVC u otros) ---
+.dvc/
+.dvcignore
+
+# --- Configuración específica de OS o entorno ---
+*.code-workspace
+*.ipynb_convert
