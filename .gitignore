@@ -1,0 +1,28 @@
+# --- Archivos del entorno y dependencias ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env/
+.venv/
+env/
+venv/
+
+# --- Datos locales ---
+data/
+datasets/
+*.csv
+*.json
+*.xlsx
+
+# --- Configuración de VSCode y macOS ---
+.vscode/
+.DS_Store
+
+# --- Archivos de Jupyter y logs ---
+.ipynb_checkpoints/
+*.log
+
+# --- Modelos o resultados grandes ---
+models/
+backtests/
+results/
