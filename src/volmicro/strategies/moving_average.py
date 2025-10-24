@@ -1,4 +1,4 @@
-from .base import Strategy
+from ..base import Strategy
 import pandas as pd
 
 class MovingAverageCrossStrategy(Strategy):

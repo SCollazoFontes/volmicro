@@ -34,6 +34,7 @@ Thumbs.db
 
 # --- Modelos, resultados y experimentos ---
 models/
+outputs/
 backtests/
 results/
 reports/
