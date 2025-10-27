@@ -16,4 +16,6 @@ class Trade:
     cash_after: float
     qty_after: float
     equity_after: float
+    realized_pnl: float = 0.0       # PnL realizado en esta operación
+    cum_realized_pnl: float = 0.0   # PnL realizado acumulado
     note: str = ""
