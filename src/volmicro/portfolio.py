@@ -1,36 +1,78 @@
 # src/volmicro/portfolio.py
-from dataclasses import dataclass
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import List, Optional
+import pandas as pd
+
+from .trades import Trade
 
 @dataclass
 class Portfolio:
-    cash: float = 10000.0   # saldo inicial
-    qty: float = 0.0         # posición (unidades)
-    last_price: float = 0.0  # último precio de marcado
+    cash: float = 10_000.0
+    qty: float = 0.0
+    symbol: str = "BTCUSDT"
+    fee_bps: float = 0.0  # comisiones en basis points (0.0 => sin comisiones)
+    starting_cash: float = field(init=False)
+    last_price: Optional[float] = None
+    trades: List[Trade] = field(default_factory=list)
 
-    @property
-    def equity(self) -> float:
-        # Valor total = efectivo + valor de la posición marcada a mercado
-        return self.cash + self.qty * self.last_price
+    def __post_init__(self):
+        self.starting_cash = float(self.cash)
 
-    def mark(self, price: float) -> None:
-        """Actualiza el último precio para calcular equity."""
+    # ============== Estado / MTM ==============
+    def equity(self, price: Optional[float] = None) -> float:
+        p = self.last_price if price is None else price
+        if p is None:
+            # al inicio, si no conocemos precio, la equity es solo el cash
+            return float(self.cash)
+        return float(self.cash + self.qty * p)
+
+    def mark_to_market(self, price: float):
+        """Actualiza el último precio conocido para marcar a mercado."""
         self.last_price = float(price)
 
-    def buy(self, qty: float, price: float) -> None:
-        """Compra qty al precio dado (modelo instantáneo sin comisiones)."""
-        cost = float(qty) * float(price)
-        if cost > self.cash:
-            # compra parcial si no alcanza el efectivo
-            qty = self.cash / float(price)
-            cost = qty * float(price)
-        self.cash -= cost
-        self.qty += qty
-        self.last_price = float(price)
+    # ============== Ejecución ==============
+    def _record_trade(self, ts: pd.Timestamp, side: str, qty: float, price: float, note: str = ""):
+        notional = qty * price
+        fee = notional * (self.fee_bps / 10_000.0)
 
-    def sell(self, qty: float, price: float) -> None:
-        """Vende qty al precio dado (modelo instantáneo sin comisiones)."""
-        qty = min(qty, self.qty)
-        proceeds = float(qty) * float(price)
-        self.cash += proceeds
-        self.qty -= qty
+        if side == "BUY":
+            if self.cash < notional + fee:
+                raise ValueError("No hay cash suficiente para comprar.")
+            self.cash -= (notional + fee)
+            self.qty += qty
+
+        elif side == "SELL":
+            if self.qty < qty:
+                raise ValueError("No hay cantidad suficiente para vender.")
+            self.cash += (notional - fee)
+            self.qty -= qty
+
+        # actualizar último precio y equity
         self.last_price = float(price)
+        eq = self.equity(price)
+
+        self.trades.append(
+            Trade(
+                ts=ts, symbol=self.symbol, side=side, qty=qty, price=price,
+                fee=fee, cash_after=float(self.cash), qty_after=float(self.qty),
+                equity_after=float(eq), note=note
+            )
+        )
+
+    def buy(self, ts: pd.Timestamp, qty: float, price: float, note: str = ""):
+        self._record_trade(ts=ts, side="BUY", qty=qty, price=price, note=note)
+
+    def sell(self, ts: pd.Timestamp, qty: float, price: float, note: str = ""):
+        self._record_trade(ts=ts, side="SELL", qty=qty, price=price, note=note)
+
+    # ============== Reportes ==============
+    def trades_dataframe(self) -> pd.DataFrame:
+        if not self.trades:
+            return pd.DataFrame(columns=["ts","symbol","side","qty","price","fee","cash_after","qty_after","equity_after","note"])
+        df = pd.DataFrame([t.__dict__ for t in self.trades])
+        df = df.sort_values("ts").reset_index(drop=True)
+        return df
+
+    def pnl_total(self) -> float:
+        return self.equity() - self.starting_cash

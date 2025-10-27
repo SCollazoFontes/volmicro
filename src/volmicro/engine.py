@@ -1,29 +1,32 @@
 # src/volmicro/engine.py
-from typing import Callable, Iterable
+import logging
+from typing import Iterable, Protocol
 from .core import Bar
-
-# src/volmicro/engine.py
 from .portfolio import Portfolio
 
-def run(iter_bars, strategy, cash_init: float = 10_000.0):
-    """
-    iter_bars: iterable/generador de Bar (tu iter_bars() actual o similar)
-    strategy:  objeto con on_start(portfolio) y on_bar(bar, portfolio)
-    """
-    portfolio = Portfolio(cash=cash_init)
+logger = logging.getLogger(__name__)
 
-    # hook opcional al inicio
-    if hasattr(strategy, "on_start"):
-        strategy.on_start(portfolio)
+class Strategy(Protocol):
+    def on_bar(self, bar: Bar, portfolio: Portfolio) -> None: ...
 
-    for bar in iter_bars:
-        # marcamos precio para tener equity actualizado
-        portfolio.mark(bar.close)
+def run_engine(bars: Iterable[Bar], portfolio: Portfolio, strategy: Strategy) -> Portfolio:
+    for i, bar in enumerate(bars, start=1):
+        # MTM con el close de la barra actual
+        portfolio.mark_to_market(bar.close)
 
-        # pasamos el control a la estrategia
+        # Logging por barra (antes de ejecutar la estrategia)
+        logger.info(
+            "[%s] %s i=%d close=%.2f cash=%.2f qty=%.6f equity=%.2f",
+            str(bar.ts), bar.symbol, i, bar.close, portfolio.cash, portfolio.qty, portfolio.equity()
+        )
+
+        # Ejecutar la estrategia en esta barra
         strategy.on_bar(bar, portfolio)
 
-        # (opcional) imprime un rastro muy corto
-        # print(f"{bar.ts}  price={bar.close:.2f} cash={portfolio.cash:.2f} qty={portfolio.qty:.6f} equity={portfolio.equity:.2f}")
+        # (opcional) Logging después por si la estrategia movió algo
+        logger.debug(
+            "POST on_bar -> cash=%.2f qty=%.6f equity=%.2f",
+            portfolio.cash, portfolio.qty, portfolio.equity()
+        )
 
-    return portfolio  # por si quieres inspeccionar al final
+    return portfolio

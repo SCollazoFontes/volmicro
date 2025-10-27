@@ -1,18 +1,14 @@
 # src/volmicro/strategy.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from .portfolio import Portfolio
+from .core import Bar
 
 @dataclass
 class BuySecondBarStrategy:
-    _count: int = 0
-    _done: bool = False
+    _counter: int = field(default=0, init=False)
 
-    def on_start(self, portfolio) -> None:
-        # opcional: logs/ inicialización
-        pass
-
-    def on_bar(self, bar, portfolio) -> None:
-        """Compra 1 unidad en la segunda barra y no vuelve a operar."""
-        self._count += 1
-        if not self._done and self._count == 2:
-            portfolio.buy(qty=1.0, price=bar.close)
-            self._done = True
+    def on_bar(self, bar: Bar, portfolio: Portfolio) -> None:
+        self._counter += 1
+        if self._counter == 2:
+            # compra 1 unidad al close de la 2ª barra
+            portfolio.buy(ts=bar.ts, qty=1.0, price=bar.close, note="Second bar buy")
