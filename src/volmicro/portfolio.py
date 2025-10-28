@@ -1,9 +1,35 @@
 # src/volmicro/portfolio.py
 from __future__ import annotations
+import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Literal, Dict, Any
 import pandas as pd
 from .trades import Trade
+from decimal import Decimal
+import math
+from src.volmicro.rules import SymbolRules, apply_exchange_rules
+from . import settings
+
+logger = logging.getLogger(__name__)
+
+# ----------------------------
+# Estructura para vista previa de ejecución (slippage + reglas)
+# ----------------------------
+@dataclass
+class ExecPreview:
+    valid: bool
+    reason: Optional[str]
+    intended_price: float              # precio de referencia (p.ej., close de barra)
+    exec_price_raw: float              # precio tras slippage, antes de redondeo tick
+    exec_price: float                  # precio final tras redondeo tick
+    qty_raw: float                     # qty ideal antes de reglas
+    qty_rounded: float                 # qty final tras stepSize
+    price_round_diff: float            # exec_price_raw - exec_price
+    qty_round_diff: float              # qty_raw - qty_rounded
+    slippage_bps: float
+    notional_before_round: float       # exec_price_raw * qty_raw
+    notional_after_round: float        # exec_price * qty_rounded
+
 
 @dataclass
 class Portfolio:
@@ -22,9 +48,27 @@ class Portfolio:
 
     realized_pnl_net_fees: bool = False  # si True, restará la fee al realized_pnl
 
+    # === NUEVO: reglas y slippage ===
+    rules: Optional[SymbolRules] = None
+    slippage_bps: float = field(default_factory=lambda: float(settings.SLIPPAGE_BPS))
+
+    # metadatos paralelos a self.trades para columnas avanzadas en trades.csv
+    _trade_meta: List[Dict[str, Any]] = field(default_factory=list)
+
     def __post_init__(self):
         self.starting_cash = float(self.cash)
 
+    # ----------------------------
+    # API de reglas/slippage
+    # ----------------------------
+    def set_execution_rules(self, rules: SymbolRules, slippage_bps: float) -> None:
+        """Fija reglas de exchange y slippage (bps) para este portfolio."""
+        self.rules = rules
+        self.slippage_bps = float(slippage_bps)
+
+    # ----------------------------
+    # Helpers
+    # ----------------------------
     def equity(self, price: Optional[float] = None) -> float:
         p = self.last_price if price is None else price
         if p is None:
@@ -34,20 +78,100 @@ class Portfolio:
     def mark_to_market(self, price: float):
         self.last_price = float(price)
 
-    def _record(self, tr: Trade):
+    def _record(self, tr: Trade, meta: Optional[Dict[str, Any]] = None):
         self.trades.append(tr)
+        self._trade_meta.append(meta or {})
 
     def _fee_from_notional(self, notional: float) -> float:
         return notional * (self.fee_bps / 10_000.0)
 
+    def _apply_execution_model(self,
+                               side: Literal["BUY", "SELL"],
+                               ref_price: float,
+                               qty_raw: float) -> ExecPreview:
+        """
+        Aplica slippage (bps) -> redondeo tick/step -> validación reglas (minNotional/minQty)
+        y chequeos básicos (cash, qty>0). No modifica estado; solo devuelve la vista previa.
+        """
+        if qty_raw <= 0 or ref_price <= 0:
+            return ExecPreview(False, "qty/ref_price no válidos", ref_price, ref_price, ref_price,
+                               qty_raw, 0.0, 0.0, qty_raw, self.slippage_bps, 0.0, 0.0)
+
+        # 1) slippage
+        slip = self.slippage_bps / 10_000.0
+        exec_price_raw = ref_price * (1 + slip) if side == "BUY" else ref_price * (1 - slip)
+
+        # 2) redondeos según reglas (si existen)
+        if self.rules is not None:
+            p_dec, q_dec, ok = apply_exchange_rules(price=exec_price_raw, qty=qty_raw, rules=self.rules)
+            exec_price = float(p_dec)
+            qty_rounded = float(q_dec)
+        else:
+            exec_price = exec_price_raw
+            qty_rounded = qty_raw
+            ok = True  # sin reglas, asumimos válido
+
+        price_round_diff = exec_price_raw - exec_price
+        qty_round_diff = qty_raw - qty_rounded
+        notional_before = exec_price_raw * qty_raw
+        notional_after = exec_price * qty_rounded
+
+        # 3) qty debe quedar > 0 tras redondeo
+        if qty_rounded <= 0:
+            return ExecPreview(False, "qty_rounded == 0 tras stepSize", ref_price, exec_price_raw, exec_price,
+                               qty_raw, qty_rounded, price_round_diff, qty_round_diff, self.slippage_bps,
+                               notional_before, notional_after)
+
+        # 4) cash suficiente para BUY (incluyendo fee explícita)
+        if side == "BUY":
+            fee_factor = 1.0 + (self.fee_bps / 10_000.0)
+            if notional_after * fee_factor > (self.cash + 1e-9):
+                return ExecPreview(False, "cash insuficiente (notional + fee)", ref_price, exec_price_raw, exec_price,
+                                   qty_raw, qty_rounded, price_round_diff, qty_round_diff, self.slippage_bps,
+                                   notional_before, notional_after)
+
+        # 5) reglas de exchange (si existen) ya comprobadas en apply_exchange_rules
+        if self.rules is not None and not ok:
+            return ExecPreview(False, "reglas exchange: minNotional/minQty", ref_price, exec_price_raw, exec_price,
+                               qty_raw, qty_rounded, price_round_diff, qty_round_diff, self.slippage_bps,
+                               notional_before, notional_after)
+
+        return ExecPreview(True, None, ref_price, exec_price_raw, exec_price,
+                           qty_raw, qty_rounded, price_round_diff, qty_round_diff, self.slippage_bps,
+                           notional_before, notional_after)
+
+    # ----------------------------
+    # Ejecución de órdenes (aplica modelo)
+    # ----------------------------
     def buy(self, ts: pd.Timestamp, qty: float, price: float, note: str = ""):
+        """
+        Ejecuta compra aplicando:
+        - slippage (bps) sobre 'price' (precio referencia)
+        - redondeos tick/step y validación (minNotional/minQty)
+        - chequeo de cash con fee
+        """
         if qty <= 0:
             return
+
+        # Vista previa de ejecución con modelo
+        prev = self._apply_execution_model(side="BUY", ref_price=price, qty_raw=qty)
+        if not prev.valid:
+            logger.info(f"[BUY omitido] {prev.reason} | qty_raw={qty:.8f} ref={price:.2f}")
+            return
+
+        price = prev.exec_price
+        qty = prev.qty_rounded
+
+        # Fee y notional finales
         notional = qty * price
         fee = self._fee_from_notional(notional)
         total = notional + fee
-        if self.cash < total:
-            raise ValueError("No hay cash suficiente para comprar.")
+
+        if self.cash + 1e-9 < total:
+            # Protección extra, no debería ocurrir por el chequeo en preview
+            logger.info("[BUY omitido] cash insuficiente en ejecución final")
+            return
+
         # ajustar caja y qty
         self.cash -= total
         new_qty = self.qty + qty
@@ -59,62 +183,138 @@ class Portfolio:
         self.qty = new_qty
         self.last_price = price
         eq = self.equity(price)
+
         tr = Trade(
             ts=ts, symbol=self.symbol, side="BUY", qty=qty, price=price,
             fee=fee, cash_after=float(self.cash), qty_after=float(self.qty),
             equity_after=float(eq), realized_pnl=0.0, cum_realized_pnl=self.realized_pnl,
             note=note
         )
-        self._record(tr)
+        # Metadatos avanzados para el CSV
+        meta = {
+            "intended_price": prev.intended_price,
+            "exec_price_raw": prev.exec_price_raw,
+            "price_round_diff": prev.price_round_diff,
+            "qty_raw": prev.qty_raw,
+            "qty_rounded": prev.qty_rounded,
+            "qty_round_diff": prev.qty_round_diff,
+            "slippage_bps": prev.slippage_bps,
+            "notional_before_round": prev.notional_before_round,
+            "notional_after_round": prev.notional_after_round,
+            "rule_check": "OK" if prev.valid else prev.reason,
+        }
+        self._record(tr, meta=meta)
 
     def sell(self, ts: pd.Timestamp, qty: float, price: float, note: str = ""):
+        """
+        Ejecuta venta aplicando el mismo modelo de ejecución.
+        """
         if qty <= 0:
             return
-        if qty > self.qty:
+        if qty > self.qty + 1e-12:
             raise ValueError("No hay cantidad suficiente para vender.")
+
+        prev = self._apply_execution_model(side="SELL", ref_price=price, qty_raw=qty)
+        if not prev.valid:
+            logger.info(f"[SELL omitido] {prev.reason} | qty_raw={qty:.8f} ref={price:.2f}")
+            return
+
+        price = prev.exec_price
+        qty = prev.qty_rounded
+
+        if qty > self.qty + 1e-12:
+            # Tras redondeo, puede quedar ligeramente > self.qty por temas de precisión
+            qty = min(qty, self.qty)
+
         notional = qty * price
         fee = self._fee_from_notional(notional)
+
         # PnL realizado en esta venta (promedio)
         realized = (price - self.avg_price) * qty
         if self.realized_pnl_net_fees:
             realized -= fee  # netear fees en el PnL realizado si así se desea
         self.realized_pnl += realized
+
         # ajustar caja y qty
         self.cash += (notional - fee)
         self.qty -= qty
         # si la posición queda a cero, reseteamos avg_price
-        if self.qty == 0:
+        if self.qty <= 1e-12:
+            self.qty = 0.0
             self.avg_price = 0.0
+
         self.last_price = price
         eq = self.equity(price)
+
         tr = Trade(
             ts=ts, symbol=self.symbol, side="SELL", qty=qty, price=price,
             fee=fee, cash_after=float(self.cash), qty_after=float(self.qty),
             equity_after=float(eq), realized_pnl=realized, cum_realized_pnl=self.realized_pnl,
             note=note
         )
-        self._record(tr)
+        meta = {
+            "intended_price": prev.intended_price,
+            "exec_price_raw": prev.exec_price_raw,
+            "price_round_diff": prev.price_round_diff,
+            "qty_raw": prev.qty_raw,
+            "qty_rounded": prev.qty_rounded,
+            "qty_round_diff": prev.qty_round_diff,
+            "slippage_bps": prev.slippage_bps,
+            "notional_before_round": prev.notional_before_round,
+            "notional_after_round": prev.notional_after_round,
+            "rule_check": "OK" if prev.valid else prev.reason,
+        }
+        self._record(tr, meta=meta)
 
+    # ----------------------------
+    # Sizing
+    # ----------------------------
     def affordable_qty(self, price: float, alloc_pct: float = 1.0) -> float:
         if price <= 0 or alloc_pct <= 0:
             return 0.0
         fee_mult = 1.0 + (self.fee_bps / 10_000.0)
         budget = self.cash * alloc_pct
         return max(0.0, budget / (price * fee_mult))
-    
+
+    # ----------------------------
+    # Reports
+    # ----------------------------
     def equity_curve_dataframe(self) -> pd.DataFrame:
         if not self._equity_curve:
-            return pd.DataFrame(columns=["ts","equity"])
-        return pd.DataFrame(self._equity_curve, columns=["ts","equity"]).sort_values("ts").reset_index(drop=True)
+            return pd.DataFrame(columns=["ts", "equity"])
+        return pd.DataFrame(self._equity_curve, columns=["ts", "equity"]).sort_values("ts").reset_index(drop=True)
 
-
-    # ===== Reportes =====
     def trades_dataframe(self) -> pd.DataFrame:
+        """
+        Combina los datos de Trade con metadatos de ejecución (slippage/reglas).
+        No rompe compatibilidad si no hay metadatos.
+        """
+        base_cols = ["ts","symbol","side","qty","price","fee","cash_after","qty_after",
+                     "equity_after","realized_pnl","cum_realized_pnl","note"]
+
         if not self.trades:
-            cols = ["ts","symbol","side","qty","price","fee","cash_after","qty_after",
-                    "equity_after","realized_pnl","cum_realized_pnl","note"]
-            return pd.DataFrame(columns=cols)
+            # devolver cabecera extendida aunque no haya trades
+            extra_cols = [
+                "intended_price","exec_price_raw","price_round_diff","qty_raw","qty_rounded",
+                "qty_round_diff","slippage_bps","notional_before_round","notional_after_round","rule_check"
+            ]
+            return pd.DataFrame(columns=base_cols + extra_cols)
+
         df = pd.DataFrame([t.__dict__ for t in self.trades]).sort_values("ts").reset_index(drop=True)
+
+        # metadatos paralelos
+        if self._trade_meta and len(self._trade_meta) == len(self.trades):
+            meta_df = pd.DataFrame(self._trade_meta)
+            # Asegurar mismas filas y merge por índice
+            meta_df = meta_df.reindex(df.index)
+            df = pd.concat([df, meta_df], axis=1)
+        else:
+            # Si no hay metadatos (compatibilidad), asegurar columnas base
+            for c in base_cols:
+                if c not in df.columns:
+                    df[c] = None
+            df = df[base_cols]
+
         return df
 
     def pnl_total(self) -> float:
