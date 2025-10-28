@@ -9,6 +9,7 @@ from decimal import Decimal
 import math
 from src.volmicro.rules import SymbolRules, apply_exchange_rules
 from . import settings
+from src.volmicro.const import SCHEMA_VERSION  # <-- añadido
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ class Portfolio:
 
     # metadatos paralelos a self.trades para columnas avanzadas en trades.csv
     _trade_meta: List[Dict[str, Any]] = field(default_factory=list)
+
+    # === NUEVO: run_id para identificar la ejecución ===
+    run_id: Optional[str] = None  # <-- añadido
 
     def __post_init__(self):
         self.starting_cash = float(self.cash)
@@ -191,6 +195,8 @@ class Portfolio:
             note=note
         )
         # Metadatos avanzados para el CSV
+        # Añadimos run_id, fee_bps, reglas usadas y schema_version
+        fee_bps_calc = 1e4 * (fee / prev.notional_after_round) if prev.notional_after_round else 0.0
         meta = {
             "intended_price": prev.intended_price,
             "exec_price_raw": prev.exec_price_raw,
@@ -202,6 +208,14 @@ class Portfolio:
             "notional_before_round": prev.notional_before_round,
             "notional_after_round": prev.notional_after_round,
             "rule_check": "OK" if prev.valid else prev.reason,
+
+            # === NUEVOS CAMPOS PARA EL CONTRATO DE DATOS ===
+            "run_id": self.run_id,
+            "fee_bps": fee_bps_calc,
+            "tickSize_used": getattr(self.rules, "tickSize", None) if self.rules else None,
+            "stepSize_used": getattr(self.rules, "stepSize", None) if self.rules else None,
+            "minNotional_used": getattr(self.rules, "minNotional", None) if self.rules else None,
+            "schema_version": SCHEMA_VERSION,
         }
         self._record(tr, meta=meta)
 
@@ -252,6 +266,7 @@ class Portfolio:
             equity_after=float(eq), realized_pnl=realized, cum_realized_pnl=self.realized_pnl,
             note=note
         )
+        fee_bps_calc = 1e4 * (fee / prev.notional_after_round) if prev.notional_after_round else 0.0
         meta = {
             "intended_price": prev.intended_price,
             "exec_price_raw": prev.exec_price_raw,
@@ -263,6 +278,14 @@ class Portfolio:
             "notional_before_round": prev.notional_before_round,
             "notional_after_round": prev.notional_after_round,
             "rule_check": "OK" if prev.valid else prev.reason,
+
+            # === NUEVOS CAMPOS PARA EL CONTRATO DE DATOS ===
+            "run_id": self.run_id,
+            "fee_bps": fee_bps_calc,
+            "tickSize_used": getattr(self.rules, "tickSize", None) if self.rules else None,
+            "stepSize_used": getattr(self.rules, "stepSize", None) if self.rules else None,
+            "minNotional_used": getattr(self.rules, "minNotional", None) if self.rules else None,
+            "schema_version": SCHEMA_VERSION,
         }
         self._record(tr, meta=meta)
 
@@ -296,7 +319,9 @@ class Portfolio:
             # devolver cabecera extendida aunque no haya trades
             extra_cols = [
                 "intended_price","exec_price_raw","price_round_diff","qty_raw","qty_rounded",
-                "qty_round_diff","slippage_bps","notional_before_round","notional_after_round","rule_check"
+                "qty_round_diff","slippage_bps","notional_before_round","notional_after_round","rule_check",
+                # nuevos campos:
+                "run_id","fee_bps","tickSize_used","stepSize_used","minNotional_used","schema_version"
             ]
             return pd.DataFrame(columns=base_cols + extra_cols)
 
