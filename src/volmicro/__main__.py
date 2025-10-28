@@ -1,5 +1,5 @@
-# src/volmicro/__main__.py
 import logging
+from . import settings
 from .binance_client import BinanceClient
 from .binance_feed import iter_bars
 from .engine import run_engine
@@ -7,23 +7,21 @@ from .portfolio import Portfolio
 from .strategy import BuySecondBarStrategy
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,  # cambia a DEBUG si quieres más detalle
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+
+    client = BinanceClient(testnet=settings.TESTNET)
+    df = client.get_klines(symbol=settings.SYMBOL, interval=settings.INTERVAL, limit=settings.LIMIT)
+    bars = iter_bars(df, symbol=settings.SYMBOL)
+
+    portfolio = Portfolio(
+        cash=10_000.0,
+        symbol=settings.SYMBOL,
+        fee_bps=settings.FEE_BPS,
+        realized_pnl_net_fees=settings.REALIZED_NET_FEES
     )
+    strat = BuySecondBarStrategy(alloc_pct=settings.ALLOC_PCT)
 
-    symbol = "BTCUSDT"
-    interval = "1h"
-    limit = 200
-
-    client = BinanceClient(testnet=True)
-    df = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    bars = iter_bars(df, symbol=symbol)
-
-    portfolio = Portfolio(cash=10_000.0, symbol=symbol, fee_bps=1.0)
-    strat = BuySecondBarStrategy()
-
-    portfolio = run_engine(bars=bars, portfolio=portfolio, strategy=strat)
+    portfolio = run_engine(bars=bars, portfolio=portfolio, strategy=strat, log_every=settings.LOG_EVERY)
 
     print("\n=== RESUMEN FINAL ===")
     s = portfolio.summary()
@@ -44,6 +42,13 @@ def main():
         out = "trades.csv"
         trades_df.to_csv(out, index=False)
         print(f"\nTrades exportados a {out}")
+
+    eq_df = portfolio.equity_curve_dataframe()
+    if not eq_df.empty:
+        eq_out = "equity_curve.csv"
+        eq_df.to_csv(eq_out, index=False)
+        print(f"Equity curve exportada a {eq_out}")
+
 
 
 if __name__ == "__main__":

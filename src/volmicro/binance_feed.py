@@ -1,14 +1,16 @@
-# src/volmicro/binance_feed.py
 from __future__ import annotations
 import pandas as pd
 from typing import Iterator
 from .core import Bar
 
 def iter_bars(df: pd.DataFrame, symbol: str) -> Iterator[Bar]:
-    """
-    Convierte un DataFrame de klines (index UTC, columnas: open, high, low, close, volume)
-    en un generador de objetos Bar.
-    """
+    required = {"open","high","low","close","volume"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"El DataFrame de feed no tiene columnas: {missing}")
+    if df.index.tz is None:
+        raise ValueError("El índice del DataFrame debe ser UTC tz-aware.")
+
     for ts, row in df.iterrows():
         yield Bar(
             ts=ts, symbol=symbol,

@@ -34,6 +34,16 @@ class BinanceClient:
         )
         df["openTime"] = pd.to_datetime(df["openTime"], unit="ms", utc=True)
         df = df.set_index("openTime")[["open","high","low","close","volume"]].astype(float)
+        
+        # Validación defensiva
+        expected = {"open","high","low","close","volume"}
+        missing = expected - set(df.columns)
+        if missing:
+            raise ValueError(f"Faltan columnas en klines: {missing}")
+        if df.index.tz is None:
+            raise ValueError("El índice de klines debe ser tz-aware (UTC).")
+        # Cast explícito a float64 (consistencia numérica)
+        df = df.astype({"open":"float64","high":"float64","low":"float64","close":"float64","volume":"float64"})
         return df
     
     def get_klines_df(symbol: str, interval: str, limit: int = 500,

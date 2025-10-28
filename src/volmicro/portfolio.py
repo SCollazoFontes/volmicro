@@ -14,10 +14,13 @@ class Portfolio:
     starting_cash: float = field(init=False)
     last_price: Optional[float] = None
     trades: List[Trade] = field(default_factory=list)
+    _equity_curve: list | None = None
 
     # tracking de posición
     avg_price: float = 0.0
     realized_pnl: float = 0.0
+
+    realized_pnl_net_fees: bool = False  # si True, restará la fee al realized_pnl
 
     def __post_init__(self):
         self.starting_cash = float(self.cash)
@@ -73,6 +76,8 @@ class Portfolio:
         fee = self._fee_from_notional(notional)
         # PnL realizado en esta venta (promedio)
         realized = (price - self.avg_price) * qty
+        if self.realized_pnl_net_fees:
+            realized -= fee  # netear fees en el PnL realizado si así se desea
         self.realized_pnl += realized
         # ajustar caja y qty
         self.cash += (notional - fee)
@@ -90,13 +95,17 @@ class Portfolio:
         )
         self._record(tr)
 
-    # dentro de Portfolio
     def affordable_qty(self, price: float, alloc_pct: float = 1.0) -> float:
         if price <= 0 or alloc_pct <= 0:
             return 0.0
         fee_mult = 1.0 + (self.fee_bps / 10_000.0)
         budget = self.cash * alloc_pct
         return max(0.0, budget / (price * fee_mult))
+    
+    def equity_curve_dataframe(self) -> pd.DataFrame:
+        if not self._equity_curve:
+            return pd.DataFrame(columns=["ts","equity"])
+        return pd.DataFrame(self._equity_curve, columns=["ts","equity"]).sort_values("ts").reset_index(drop=True)
 
 
     # ===== Reportes =====
