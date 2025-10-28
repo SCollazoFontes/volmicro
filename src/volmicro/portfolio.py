@@ -9,7 +9,7 @@ from decimal import Decimal
 import math
 from src.volmicro.rules import SymbolRules, apply_exchange_rules
 from . import settings
-from src.volmicro.const import SCHEMA_VERSION  # <-- añadido
+from src.volmicro.const import SCHEMA_VERSION  # <-- esquema de datos
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +49,15 @@ class Portfolio:
 
     realized_pnl_net_fees: bool = False  # si True, restará la fee al realized_pnl
 
-    # === NUEVO: reglas y slippage ===
+    # === Reglas y slippage ===
     rules: Optional[SymbolRules] = None
     slippage_bps: float = field(default_factory=lambda: float(settings.SLIPPAGE_BPS))
 
     # metadatos paralelos a self.trades para columnas avanzadas en trades.csv
     _trade_meta: List[Dict[str, Any]] = field(default_factory=list)
 
-    # === NUEVO: run_id para identificar la ejecución ===
-    run_id: Optional[str] = None  # <-- añadido
+    # run_id para identificar la ejecución
+    run_id: Optional[str] = None
 
     def __post_init__(self):
         self.starting_cash = float(self.cash)
@@ -88,6 +88,34 @@ class Portfolio:
 
     def _fee_from_notional(self, notional: float) -> float:
         return notional * (self.fee_bps / 10_000.0)
+
+    def _rules_snapshot(self) -> Dict[str, Any]:
+        """
+        Devuelve un dict con tickSize/stepSize/minNotional robusto a distintos nombres
+        (p.ej., tickSize vs tick_size, minNotional vs min_notional/notionalMin).
+        """
+        r = self.rules
+        if r is None:
+            return {"tickSize_used": None, "stepSize_used": None, "minNotional_used": None}
+
+        def get_any(obj, names):
+            # Soporta objeto con atributos o dict-like
+            for n in names:
+                if hasattr(obj, n):
+                    return getattr(obj, n)
+                if isinstance(obj, dict) and n in obj:
+                    return obj[n]
+            return None
+
+        tick = get_any(r, ["tickSize", "tick_size", "tick_size_step", "tick_size"])
+        step = get_any(r, ["stepSize", "step_size", "step_size_step", "step_size"])
+        minimo = get_any(r, ["minNotional", "min_notional", "notionalMin", "min_notional_value"])
+
+        return {
+            "tickSize_used": tick,
+            "stepSize_used": step,
+            "minNotional_used": minimo,
+        }
 
     def _apply_execution_model(self,
                                side: Literal["BUY", "SELL"],
@@ -148,16 +176,9 @@ class Portfolio:
     # Ejecución de órdenes (aplica modelo)
     # ----------------------------
     def buy(self, ts: pd.Timestamp, qty: float, price: float, note: str = ""):
-        """
-        Ejecuta compra aplicando:
-        - slippage (bps) sobre 'price' (precio referencia)
-        - redondeos tick/step y validación (minNotional/minQty)
-        - chequeo de cash con fee
-        """
         if qty <= 0:
             return
 
-        # Vista previa de ejecución con modelo
         prev = self._apply_execution_model(side="BUY", ref_price=price, qty_raw=qty)
         if not prev.valid:
             logger.info(f"[BUY omitido] {prev.reason} | qty_raw={qty:.8f} ref={price:.2f}")
@@ -166,20 +187,17 @@ class Portfolio:
         price = prev.exec_price
         qty = prev.qty_rounded
 
-        # Fee y notional finales
         notional = qty * price
         fee = self._fee_from_notional(notional)
         total = notional + fee
 
         if self.cash + 1e-9 < total:
-            # Protección extra, no debería ocurrir por el chequeo en preview
             logger.info("[BUY omitido] cash insuficiente en ejecución final")
             return
 
-        # ajustar caja y qty
+        # ajustar estado
         self.cash -= total
         new_qty = self.qty + qty
-        # actualizar avg_price
         if self.qty <= 0:
             self.avg_price = price
         else:
@@ -194,9 +212,9 @@ class Portfolio:
             equity_after=float(eq), realized_pnl=0.0, cum_realized_pnl=self.realized_pnl,
             note=note
         )
-        # Metadatos avanzados para el CSV
-        # Añadimos run_id, fee_bps, reglas usadas y schema_version
+
         fee_bps_calc = 1e4 * (fee / prev.notional_after_round) if prev.notional_after_round else 0.0
+        # Metadatos avanzados + snapshot de reglas + schema
         meta = {
             "intended_price": prev.intended_price,
             "exec_price_raw": prev.exec_price_raw,
@@ -208,21 +226,14 @@ class Portfolio:
             "notional_before_round": prev.notional_before_round,
             "notional_after_round": prev.notional_after_round,
             "rule_check": "OK" if prev.valid else prev.reason,
-
-            # === NUEVOS CAMPOS PARA EL CONTRATO DE DATOS ===
             "run_id": self.run_id,
             "fee_bps": fee_bps_calc,
-            "tickSize_used": getattr(self.rules, "tickSize", None) if self.rules else None,
-            "stepSize_used": getattr(self.rules, "stepSize", None) if self.rules else None,
-            "minNotional_used": getattr(self.rules, "minNotional", None) if self.rules else None,
             "schema_version": SCHEMA_VERSION,
+            **self._rules_snapshot(),
         }
         self._record(tr, meta=meta)
 
     def sell(self, ts: pd.Timestamp, qty: float, price: float, note: str = ""):
-        """
-        Ejecuta venta aplicando el mismo modelo de ejecución.
-        """
         if qty <= 0:
             return
         if qty > self.qty + 1e-12:
@@ -235,24 +246,19 @@ class Portfolio:
 
         price = prev.exec_price
         qty = prev.qty_rounded
-
         if qty > self.qty + 1e-12:
-            # Tras redondeo, puede quedar ligeramente > self.qty por temas de precisión
             qty = min(qty, self.qty)
 
         notional = qty * price
         fee = self._fee_from_notional(notional)
 
-        # PnL realizado en esta venta (promedio)
         realized = (price - self.avg_price) * qty
         if self.realized_pnl_net_fees:
-            realized -= fee  # netear fees en el PnL realizado si así se desea
+            realized -= fee
         self.realized_pnl += realized
 
-        # ajustar caja y qty
         self.cash += (notional - fee)
         self.qty -= qty
-        # si la posición queda a cero, reseteamos avg_price
         if self.qty <= 1e-12:
             self.qty = 0.0
             self.avg_price = 0.0
@@ -266,6 +272,7 @@ class Portfolio:
             equity_after=float(eq), realized_pnl=realized, cum_realized_pnl=self.realized_pnl,
             note=note
         )
+
         fee_bps_calc = 1e4 * (fee / prev.notional_after_round) if prev.notional_after_round else 0.0
         meta = {
             "intended_price": prev.intended_price,
@@ -278,14 +285,10 @@ class Portfolio:
             "notional_before_round": prev.notional_before_round,
             "notional_after_round": prev.notional_after_round,
             "rule_check": "OK" if prev.valid else prev.reason,
-
-            # === NUEVOS CAMPOS PARA EL CONTRATO DE DATOS ===
             "run_id": self.run_id,
             "fee_bps": fee_bps_calc,
-            "tickSize_used": getattr(self.rules, "tickSize", None) if self.rules else None,
-            "stepSize_used": getattr(self.rules, "stepSize", None) if self.rules else None,
-            "minNotional_used": getattr(self.rules, "minNotional", None) if self.rules else None,
             "schema_version": SCHEMA_VERSION,
+            **self._rules_snapshot(),
         }
         self._record(tr, meta=meta)
 
@@ -310,31 +313,24 @@ class Portfolio:
     def trades_dataframe(self) -> pd.DataFrame:
         """
         Combina los datos de Trade con metadatos de ejecución (slippage/reglas).
-        No rompe compatibilidad si no hay metadatos.
         """
         base_cols = ["ts","symbol","side","qty","price","fee","cash_after","qty_after",
                      "equity_after","realized_pnl","cum_realized_pnl","note"]
 
         if not self.trades:
-            # devolver cabecera extendida aunque no haya trades
             extra_cols = [
                 "intended_price","exec_price_raw","price_round_diff","qty_raw","qty_rounded",
                 "qty_round_diff","slippage_bps","notional_before_round","notional_after_round","rule_check",
-                # nuevos campos:
                 "run_id","fee_bps","tickSize_used","stepSize_used","minNotional_used","schema_version"
             ]
             return pd.DataFrame(columns=base_cols + extra_cols)
 
         df = pd.DataFrame([t.__dict__ for t in self.trades]).sort_values("ts").reset_index(drop=True)
 
-        # metadatos paralelos
         if self._trade_meta and len(self._trade_meta) == len(self.trades):
-            meta_df = pd.DataFrame(self._trade_meta)
-            # Asegurar mismas filas y merge por índice
-            meta_df = meta_df.reindex(df.index)
+            meta_df = pd.DataFrame(self._trade_meta).reindex(df.index)
             df = pd.concat([df, meta_df], axis=1)
         else:
-            # Si no hay metadatos (compatibilidad), asegurar columnas base
             for c in base_cols:
                 if c not in df.columns:
                     df[c] = None
