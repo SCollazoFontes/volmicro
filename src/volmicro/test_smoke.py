@@ -18,10 +18,10 @@ obvias en el wiring del sistema.
 
 import pandas as pd
 
+from src.volmicro.binance_feed import iter_bars
 from src.volmicro.engine import run_engine
 from src.volmicro.portfolio import Portfolio
 from src.volmicro.strategy import BuySecondBarStrategy
-from src.volmicro.binance_feed import iter_bars
 
 
 # ------------------------------------------------------------------------------
@@ -40,10 +40,10 @@ def make_df(n: int = 10, start: float = 100.0, step: float = 1.0) -> pd.DataFram
     """
     idx = pd.date_range("2025-01-01", periods=n, freq="h", tz="UTC")
     data = {
-        "open":   [start + i * step for i in range(n)],
-        "high":   [start + i * step + 1 for i in range(n)],
-        "low":    [start + i * step - 1 for i in range(n)],
-        "close":  [start + i * step for i in range(n)],
+        "open": [start + i * step for i in range(n)],
+        "high": [start + i * step + 1 for i in range(n)],
+        "low": [start + i * step - 1 for i in range(n)],
+        "close": [start + i * step for i in range(n)],
         "volume": [1.0] * n,
     }
     return pd.DataFrame(data, index=idx)
@@ -61,7 +61,7 @@ def test_engine_runs_and_trades():
 
     # 3) Portfolio y estrategia trivial
     p = Portfolio(cash=1000.0, symbol="TEST", fee_bps=0.0)  # fee=0 para no contaminar la lógica
-    strat = BuySecondBarStrategy(alloc_pct=0.10)            # compra 10% del cash en la 2ª barra
+    strat = BuySecondBarStrategy(alloc_pct=0.10)  # compra 10% del cash en la 2ª barra
 
     # 4) Engine (log_every alto para no spamear logs en el test)
     p = run_engine(bars, p, strat, log_every=1000)
@@ -71,7 +71,9 @@ def test_engine_runs_and_trades():
     assert len(trades) == 2, f"Se esperaban 2 trades (BUY y SELL), pero hay {len(trades)}"
 
     # 6) Equity: en serie ascendente y cerrando al final, el equity final > inicial
-    assert p.equity() > p.starting_cash, "El equity final no es mayor que el inicial en una serie ascendente"
+    assert (
+        p.equity() > p.starting_cash
+    ), "El equity final no es mayor que el inicial en una serie ascendente"
 
     # 7) Chequeos suaves: qty > 0 en BUY y SELL y side válidos
     assert set(trades["side"].unique()) <= {"BUY", "SELL"}, "Side inesperado en trades"

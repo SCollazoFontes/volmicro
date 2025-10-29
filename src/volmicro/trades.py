@@ -12,7 +12,8 @@ través de `Portfolio.trades_dataframe()` junto con metadatos adicionales
 """
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
+
 import pandas as pd
 
 # Tipo literal que restringe `side` a “BUY” o “SELL”
@@ -82,6 +83,6 @@ class Trade:
     equity_after: float
 
     # Campos opcionales o derivados
-    realized_pnl: float = 0.0        # PnL realizado en este trade concreto
-    cum_realized_pnl: float = 0.0    # PnL realizado acumulado total
-    note: str = ""                   # comentario o descripción
+    realized_pnl: float = 0.0  # PnL realizado en este trade concreto
+    cum_realized_pnl: float = 0.0  # PnL realizado acumulado total
+    note: str = ""  # comentario o descripción

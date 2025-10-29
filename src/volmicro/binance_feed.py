@@ -32,11 +32,11 @@ Salida:
 
 from __future__ import annotations
 
-from typing import Iterator, Iterable
+from collections.abc import Iterator
+
 import pandas as pd
 
 from .core import Bar
-
 
 # --------------------------------------------------------------------------------------
 # Utilidades internas (pequeñas comprobaciones defensivas para robustez del pipeline)
@@ -95,6 +95,7 @@ def _ensure_float64(df: pd.DataFrame) -> pd.DataFrame:
 # API pública: generador de barras a partir de un DataFrame
 # ------------------------------------------------------
 
+
 def iter_bars(df: pd.DataFrame, symbol: str) -> Iterator[Bar]:
     """
     Itera un DataFrame OHLCV y va generando `Bar` uno a uno.
@@ -129,9 +130,9 @@ def iter_bars(df: pd.DataFrame, symbol: str) -> Iterator[Bar]:
     #    - row["col"] es un escalar; convertimos a float explícito
     for ts, row in df.iterrows():
         yield Bar(
-            ts=ts,                       # pd.Timestamp tz-aware (UTC)
-            symbol=symbol,               # "BTCUSDT" u otro
-            open=float(row["open"]),     # cast defensivo
+            ts=ts,  # pd.Timestamp tz-aware (UTC)
+            symbol=symbol,  # "BTCUSDT" u otro
+            open=float(row["open"]),  # cast defensivo
             high=float(row["high"]),
             low=float(row["low"]),
             close=float(row["close"]),

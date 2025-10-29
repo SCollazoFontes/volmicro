@@ -1,0 +1,85 @@
+# .github/workflows/ci.yml
+# --------------------------------------------------------
+# CI mínima para volmicro
+# --------------------------------------------------------
+# ¿Qué hace?
+# - Ejecuta Black (check), Ruff (lint), Mypy (tipos) y Pytest (tests).
+# - Se dispara en cada push y en cada Pull Request a main.
+# - Usa caché de pip para acelerar.
+# --------------------------------------------------------
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------------------------
+      # Checkout del repo
+      # ---------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------------------------
+      # Setup de Python
+      # ---------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ---------------------------
+      # Cache de dependencias pip
+      # ---------------------------
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # ---------------------------
+      # Instalar dependencias
+      # ---------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Si tienes requirements.txt, descomenta esta línea:
+          # pip install -r requirements.txt
+          pip install black ruff mypy pytest
+
+      # ---------------------------
+      # Black (solo checkea)
+      # ---------------------------
+      - name: Run Black (check)
+        run: |
+          python -m black --line-length=100 --check .
+
+      # ---------------------------
+      # Ruff (lint + format check)
+      # ---------------------------
+      - name: Run Ruff (lint)
+        run: |
+          ruff .
+
+      # ---------------------------
+      # Mypy (tipos)
+      # ---------------------------
+      - name: Run Mypy
+        run: |
+          mypy
+
+      # ---------------------------
+      # Pytest (tests)
+      # ---------------------------
+      - name: Run Pytest
+        run: |
+          pytest -q

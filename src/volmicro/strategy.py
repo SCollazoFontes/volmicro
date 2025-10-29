@@ -19,8 +19,9 @@ En este archivo incluimos una estrategia trivial de ejemplo: **BuySecondBarStrat
 """
 
 from dataclasses import dataclass, field
-from .portfolio import Portfolio
+
 from .core import Bar
+from .portfolio import Portfolio
 
 
 # ======================================================================================
@@ -46,8 +47,8 @@ class BuySecondBarStrategy:
     """
 
     # --- Atributos internos ---
-    _counter: int = field(default=0, init=False)   # contador de barras procesadas
-    alloc_pct: float = 0.10                        # % del cash que se asigna al comprar
+    _counter: int = field(default=0, init=False)  # contador de barras procesadas
+    alloc_pct: float = 0.10  # % del cash que se asigna al comprar
     _last_bar: Bar | None = field(default=None, init=False)  # referencia a la última barra
 
     # ------------------------------------------------------------------------------

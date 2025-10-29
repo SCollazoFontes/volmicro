@@ -21,7 +21,7 @@ Notas:
 from __future__ import annotations
 
 import logging
-from typing import Optional, Any, List, Dict
+from typing import Any, cast
 
 import pandas as pd
 from binance.spot import Spot
@@ -56,15 +56,15 @@ class BinanceClient:
     def __init__(
         self,
         testnet: bool = True,
-        api_key: Optional[str] = None,
-        api_secret: Optional[str] = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
     ):
         base_url = _TESTNET_BASE if testnet else _MAINNET_BASE
 
         # NOTA: para endpoints públicos (klines) puedes no pasar api_key/secret.
         # Si en el futuro quieres firmar peticiones (órdenes, account, etc.),
         # añade aquí las credenciales o léelas desde settings/.env.
-        kwargs: Dict[str, Any] = {"base_url": base_url}
+        kwargs: dict[str, Any] = {"base_url": base_url}
         if api_key:
             kwargs["api_key"] = api_key
         if api_secret:
@@ -80,8 +80,8 @@ class BinanceClient:
         symbol: str,
         interval: str,
         limit: int = 500,
-        start_ms: Optional[int] = None,
-        end_ms: Optional[int] = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
     ) -> pd.DataFrame:
         """
         Descarga klines (velas) de Binance Spot y devuelve un DataFrame con:
@@ -121,7 +121,7 @@ class BinanceClient:
 
         # Llamada directa al endpoint klines
         # Firmas posibles: klines(symbol, interval, **kwargs)
-        data: List[List[Any]] = self.client.klines(
+        data: list[list[Any]] = self.client.klines(
             symbol=symbol,
             interval=interval,
             limit=limit,
@@ -135,9 +135,18 @@ class BinanceClient:
         df = pd.DataFrame(
             data,
             columns=[
-                "openTime", "open", "high", "low", "close", "volume",
-                "closeTime", "quoteAssetVolume", "numTrades", "takerBuyBase",
-                "takerBuyQuote", "ignore",
+                "openTime",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "closeTime",
+                "quoteAssetVolume",
+                "numTrades",
+                "takerBuyBase",
+                "takerBuyQuote",
+                "ignore",
             ],
         )
 
@@ -173,18 +182,19 @@ class BinanceClient:
     # ---------------------------------------------------------------------
     # exchange_info: utilidad opcional para reglas del exchange
     # ---------------------------------------------------------------------
-    def exchange_info(self, symbol: Optional[str] = None) -> dict:
+    def exchange_info(self, symbol: str | None = None) -> dict:
         """
         Devuelve el `exchangeInfo` de Binance. Si `symbol` no es None, lo filtra
         al símbolo dado (según soporte del conector).
 
         Se expone por si `rules.py` prefiere delegar la llamada en el cliente.
         """
-        # En versiones modernas de binance-connector, `Spot.exchange_info` acepta symbol=...
-        # Algunas instalaciones antiguas tenían un subcliente `.spot()`. Dejamos el acceso simple.
         if symbol:
-            return self.client.exchange_info(symbol=symbol)
-        return self.client.exchange_info()
+            # Casteo explícito para satisfacer a mypy (el cliente retorna Any)
+            return cast(dict[str, Any], self.client.exchange_info(symbol=symbol))
+
+        # Casteo explícito para la rama sin símbolo
+        return cast(dict[str, Any], self.client.exchange_info())
 
 
 # --------------------------------------------------------------------------------
@@ -195,8 +205,8 @@ def get_klines_df(
     interval: str,
     limit: int = 500,
     testnet: bool = True,
-    start_ms: Optional[int] = None,
-    end_ms: Optional[int] = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> pd.DataFrame:
     """
     Compatibilidad con código legado que esperaba una función en lugar de una clase.

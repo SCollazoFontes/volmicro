@@ -33,15 +33,15 @@ from . import settings
 from .binance_client import BinanceClient
 from .binance_feed import iter_bars
 from .engine import run_engine
-from .portfolio import Portfolio
-from .strategy import BuySecondBarStrategy
 from .metrics import calculate_metrics
+from .portfolio import Portfolio
 from .rules import load_symbol_rules
-
+from .strategy import BuySecondBarStrategy
 
 # --------------------------------------------------------------------------------------
 # Utilidades de logging
 # --------------------------------------------------------------------------------------
+
 
 def _setup_logging(loglevel: str = "INFO", logfile: Path | None = None) -> None:
     """
@@ -74,6 +74,7 @@ def _setup_logging(loglevel: str = "INFO", logfile: Path | None = None) -> None:
 # CLI opcional para sobreescribir settings
 # --------------------------------------------------------------------------------------
 
+
 def _parse_args() -> argparse.Namespace:
     """
     Parser de argumentos CLI para overrides rápidos de configuración.
@@ -82,8 +83,12 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="volmicro – backtest runner")
     p.add_argument("--symbol", help=f"Símbolo (default settings.SYMBOL={settings.SYMBOL})")
     p.add_argument("--interval", help=f"Intervalo (default settings.INTERVAL={settings.INTERVAL})")
-    p.add_argument("--limit", type=int, help=f"Límite klines (default settings.LIMIT={settings.LIMIT})")
-    p.add_argument("--testnet", type=str, help=f"Usar testnet true/false (default={settings.TESTNET})")
+    p.add_argument(
+        "--limit", type=int, help=f"Límite klines (default settings.LIMIT={settings.LIMIT})"
+    )
+    p.add_argument(
+        "--testnet", type=str, help=f"Usar testnet true/false (default={settings.TESTNET})"
+    )
     p.add_argument("--loglevel", default="INFO", help="Nivel log (DEBUG|INFO|WARNING|ERROR)")
     p.add_argument("--logevery", type=int, help=f"Log cada N barras (default={settings.LOG_EVERY})")
     return p.parse_args()
@@ -99,6 +104,7 @@ def _coerce_bool(x: str | None, default: bool) -> bool:
 # --------------------------------------------------------------------------------------
 # Programa principal
 # --------------------------------------------------------------------------------------
+
 
 def main() -> None:
     # === 1) CLI y logging ===
@@ -122,22 +128,24 @@ def main() -> None:
     client = BinanceClient(testnet=testnet)
     try:
         df = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    except Exception as e:
-        logging.getLogger(__name__).exception(
-            f"Error descargando klines de Binance: symbol={symbol} interval={interval} limit={limit}"
+    except Exception:
+        msg = (
+            "Error descargando klines de Binance: "
+            f"symbol={symbol} interval={interval} limit={limit}"
         )
+        logging.getLogger(__name__).exception(msg)
         raise
 
     # === 3) Transformación a barras ===
     try:
         bars = iter_bars(df, symbol=symbol)
-    except Exception as e:
+    except Exception:
         logging.getLogger(__name__).exception("Error convirtiendo DataFrame OHLCV a barras")
         raise
 
     # === 4) Portfolio y estrategia ===
     portfolio = Portfolio(
-        cash=10_000.0,                 # efectivo inicial (puedes exponer por CLI más adelante)
+        cash=10_000.0,  # efectivo inicial (puedes exponer por CLI más adelante)
         symbol=symbol,
         fee_bps=settings.FEE_BPS,
         realized_pnl_net_fees=settings.REALIZED_NET_FEES,
@@ -163,7 +171,7 @@ def main() -> None:
             refresh=settings.RULES_REFRESH,
         )
         portfolio.set_execution_rules(rules=rules, slippage_bps=settings.SLIPPAGE_BPS)
-    except Exception as e:
+    except Exception:
         logging.getLogger(__name__).exception("Error cargando reglas del exchange")
         raise
 
@@ -175,7 +183,7 @@ def main() -> None:
             strategy=strat,
             log_every=log_every,
         )
-    except Exception as e:
+    except Exception:
         logging.getLogger(__name__).exception("Error durante la ejecución del backtest")
         raise
 

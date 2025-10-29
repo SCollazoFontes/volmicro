@@ -6,7 +6,8 @@ Objetivos clave:
 - Centralizar parámetros de backtest/ejecución (símbolo, intervalo, límites, costes, sizing).
 - Permitir sobreescritura vía variables de entorno (Docker, CI, CLI, .env).
 - Gestionar rutas (raíz del proyecto, reports/, rules/) de forma consistente.
-- Proveer utilidades para crear subcarpetas de reportes reproducibles (<SYMBOL>_<STRATEGY>_<YYYY-MM-DD>_runXX).
+- Proveer utilidades para crear subcarpetas de reportes reproducibles
+        (<SYMBOL>_<STRATEGY>_<YYYY-MM-DD>_runXX).
 - Exponer flags para métricas y slippage.
 - Añadir validaciones ligeras (intervalos válidos, límites, rangos) para evitar fallos silenciosos.
 
@@ -17,10 +18,11 @@ Decisiones:
 """
 
 import os
-from pathlib import Path
-from datetime import datetime
-from typing import Iterable
 import re
+from collections.abc import Iterable
+from datetime import datetime
+from pathlib import Path
+
 
 # ---------------------------
 # Helpers de entorno
@@ -35,6 +37,7 @@ def _f(name: str, default: float) -> float:
     except Exception:
         return float(default)
 
+
 def _i(name: str, default: int) -> int:
     """
     Lee una variable de entorno y la castea a int.
@@ -44,6 +47,7 @@ def _i(name: str, default: int) -> int:
         return int(os.getenv(name, default))
     except Exception:
         return int(default)
+
 
 def _b(name: str, default: bool) -> bool:
     """
@@ -64,8 +68,22 @@ SYMBOL = os.getenv("SYMBOL", "BTCUSDT").upper()
 
 # Intervalos válidos de Binance (puedes ampliar si activas otros en tu feed).
 _VALID_INTERVALS: set[str] = {
-    "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h",
-    "12h", "1d", "3d", "1w", "1M",
+    "1s",
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M",
 }
 # Si el usuario define un intervalo inválido, hacemos fallback a "1h" para no romper la descarga.
 _INTER = os.getenv("INTERVAL", "1h")
@@ -124,6 +142,7 @@ RULES_DIR.mkdir(parents=True, exist_ok=True)
 # Subcarpetas de reports: <SYMBOL>_<STRATEGY>_<YYYY-MM-DD>_runXX
 # ---------------------------
 
+
 def _next_run_number(existing_dirs: Iterable[Path], prefix: str) -> int:
     """
     Dado un conjunto de directorios existentes y un prefijo, encuentra
@@ -161,7 +180,7 @@ def generate_report_dir(symbol: str, strategy_name: str) -> Path:
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
 
     # Sanitizamos el nombre de estrategia para que sea path-safe (sin espacios o chars raros)
-    safe_strategy = re.sub(r'[^A-Za-z0-9_-]', '', strategy_name)
+    safe_strategy = re.sub(r"[^A-Za-z0-9_-]", "", strategy_name)
 
     prefix = f"{symbol}_{safe_strategy}_{date_str}_run"
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)  # creación bajo demanda

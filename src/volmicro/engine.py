@@ -19,8 +19,8 @@ Interfaz
 run_engine(
     bars: Iterable[Bar],
     portfolio: Portfolio,
-    strategy: Any,          # cualquier objeto con .on_bar(bar, portfolio) y opcional .on_finish(portfolio)
-    log_every: int = 10     # cada cuántas barras se loguea una línea en nivel INFO (0 = sólo la primera)
+    strategy: Any, # cualquier objeto con .on_bar(bar, portfolio) y opcional .on_finish(portfolio)
+    log_every: int=10 # cada cuántas barras se loguea una línea en nivel INFO (0 = sólo la primera)
 ) -> Portfolio
 
 Notas de implementación
@@ -40,7 +40,7 @@ Detalles de logging
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional, List, Tuple
+from collections.abc import Iterable
 
 from .core import Bar
 from .portfolio import Portfolio
@@ -77,8 +77,8 @@ def run_engine(
           - estado final coherente (cash, qty, avg_price, realized_pnl, last_price, etc.)
     """
     # Equity curve en memoria (lista de tuplas: (timestamp, equity))
-    equity_curve: List[Tuple[object, float]] = []
-    last_bar: Optional[Bar] = None
+    equity_curve: list[tuple[object, float]] = []
+    last_bar: Bar | None = None
 
     # Prefijo de trazabilidad si el Portfolio trae run_id (útil en logs/CSV)
     run_id = getattr(portfolio, "run_id", None)

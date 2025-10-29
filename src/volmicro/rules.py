@@ -17,9 +17,10 @@ Objetivos del módulo
 
 Integración
 -----------
-- `__main__.py`: llama `load_symbol_rules(...)` al arrancar y lo inyecta en `Portfolio.set_execution_rules(...)`.
+- `__main__.py`: llama `load_symbol_rules(...)` al arrancar y lo inyecta en
+    `Portfolio.set_execution_rules(...)`.
 - `Portfolio._apply_execution_model(...)`: usa `apply_exchange_rules(price, qty, rules)` para
-  redondear y validar `minQty/minNotional` antes de ejecutar.
+    redondear y validar `minQty/minNotional` antes de ejecutar.
 
 Decisiones
 ----------
@@ -32,9 +33,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any
 
 from . import settings
 from .binance_client import BinanceClient
@@ -58,16 +59,17 @@ class SymbolRules:
     min_notional : Optional[Decimal]  (NOTIONAL.minNotional o MIN_NOTIONAL.minNotional)
     raw_filters  : Dict[str, Any]     (copia cruda para debugging/auditoría)
     """
+
     symbol: str
     tick_size: Decimal
     step_size: Decimal
-    min_qty: Optional[Decimal]
-    max_qty: Optional[Decimal]
-    min_notional: Optional[Decimal]
-    raw_filters: Dict[str, Any]
+    min_qty: Decimal | None
+    max_qty: Decimal | None
+    min_notional: Decimal | None
+    raw_filters: dict[str, Any]
 
     # Serialización a JSON (guardamos Decimals como strings para no perder precisión)
-    def to_json(self) -> Dict[str, Any]:
+    def to_json(self) -> dict[str, Any]:
         return {
             "symbol": self.symbol,
             "tick_size": str(self.tick_size),
@@ -79,7 +81,7 @@ class SymbolRules:
         }
 
     @staticmethod
-    def from_json(d: Dict[str, Any]) -> "SymbolRules":
+    def from_json(d: dict[str, Any]) -> SymbolRules:
         # Inversa de to_json
         return SymbolRules(
             symbol=d["symbol"],
@@ -96,8 +98,11 @@ class SymbolRules:
 # Utilidades de precisión y redondeo hacia abajo (floor al múltiplo más cercano)
 # ======================================================================================
 
-def _dec(x: str | float | int) -> Decimal:
-    """Crea un Decimal con precisión estable a partir de str/float/int."""
+
+def _dec(x: str | float | int | Decimal) -> Decimal:
+    """
+    Normaliza a Decimal de forma segura.
+    """
     return Decimal(str(x))
 
 
@@ -128,8 +133,8 @@ def round_qty(qty: float | Decimal, step_size: Decimal) -> Decimal:
 def is_order_valid(
     price: Decimal,
     qty: Decimal,
-    min_notional: Optional[Decimal],
-    min_qty: Optional[Decimal],
+    min_notional: Decimal | None,
+    min_qty: Decimal | None,
 ) -> bool:
     """
     Valida reglas mínimas básicas:
@@ -149,7 +154,8 @@ def is_order_valid(
 # Parseo de exchange_info de Binance a SymbolRules
 # ======================================================================================
 
-def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any]) -> SymbolRules:
+
+def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: dict[str, Any]) -> SymbolRules:
     """
     Extrae tickSize, stepSize, minQty, maxQty y minNotional de la respuesta `exchangeInfo`.
 
@@ -160,7 +166,8 @@ def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any])
           "symbol": "BTCUSDT",
           "filters": [
             {"filterType":"PRICE_FILTER", "tickSize":"0.10", ...},
-            {"filterType":"LOT_SIZE",     "stepSize":"0.00001000","minQty":"0.00001000","maxQty":"9000.00000000"},
+            {"filterType":"LOT_SIZE",     "stepSize":"0.00001000",
+                "minQty":"0.00001000","maxQty":"9000.00000000"},
             {"filterType":"NOTIONAL",     "minNotional":"5.00"},
             ...
           ]
@@ -178,11 +185,11 @@ def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any])
         raise ValueError(f"Símbolo {symbol} no encontrado en exchangeInfo")
 
     # 2) Extraer filtros
-    tick_size: Optional[Decimal] = None
-    step_size: Optional[Decimal] = None
-    min_qty: Optional[Decimal] = None
-    max_qty: Optional[Decimal] = None
-    min_notional: Optional[Decimal] = None
+    tick_size: Decimal | None = None
+    step_size: Decimal | None = None
+    min_qty: Decimal | None = None
+    max_qty: Decimal | None = None
+    min_notional: Decimal | None = None
 
     filters = syminfo.get("filters", [])
     raw_filters = {f.get("filterType"): f for f in filters}
@@ -202,9 +209,11 @@ def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any])
                 min_notional = _dec(f["minNotional"])
 
     if tick_size is None or step_size is None:
-        raise ValueError(
-            f"Faltan PRICE_FILTER/LOT_SIZE para {symbol}: tick_size={tick_size}, step_size={step_size}"
+        msg = (
+            f"Faltan PRICE_FILTER/LOT_SIZE para {symbol}: "
+            f"tick_size={tick_size}, step_size={step_size}"
         )
+        raise ValueError(msg)
 
     return SymbolRules(
         symbol=symbol,
@@ -220,6 +229,7 @@ def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any])
 # ======================================================================================
 # Acceso a Binance y cache local
 # ======================================================================================
+
 
 def fetch_symbol_rules(symbol: str, testnet: bool) -> SymbolRules:
     """
@@ -259,7 +269,7 @@ def load_symbol_rules(
     cache_path = _rules_cache_path(symbol)
 
     if use_cache and cache_path.exists() and not refresh:
-        with open(cache_path, "r") as f:
+        with open(cache_path) as f:
             data = json.load(f)
         return SymbolRules.from_json(data)
 
@@ -273,6 +283,7 @@ def load_symbol_rules(
 # ======================================================================================
 # Helper de integración: aplicar reglas a (price, qty)
 # ======================================================================================
+
 
 def apply_exchange_rules(
     price: float | Decimal,

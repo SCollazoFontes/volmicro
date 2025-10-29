@@ -4,17 +4,17 @@ Módulo de cartera y ejecución simulada.
 
 Responsabilidades principales
 -----------------------------
-1) Mantener el **estado** de la cartera:
+1) Mantener el estado de la cartera:
    - cash (efectivo), qty (posición), avg_price (precio medio), realized_pnl (PnL realizado),
      last_price (último precio marcado), equity (valor total = cash + qty * last_price).
-2) Simular la **ejecución** de órdenes BUY/SELL:
-   - Aplicar **slippage** en bps al precio de referencia (p. ej. el close de la barra).
-   - Respetar **reglas del exchange** (tickSize, stepSize, minQty, minNotional) si están disponibles.
-   - Cobrar **comisiones** en bps sobre el notional.
-   - Validar **cash suficiente** (BUY) y **cantidad disponible** (SELL).
-   - Registrar el **trade** (con metadatos útiles para auditoría) manteniendo un **schema_version**.
-3) Proveer utilidades de **sizing** (p. ej. affordable_qty), **reporting**
-   (equity_curve_dataframe, trades_dataframe, summary) y engancharse al **engine**
+2) Simular la ejecución de órdenes BUY/SELL:
+   - Aplicar slippage en bps al precio de referencia (p. ej. el close de la barra).
+   - Respetar reglas del exchange (tickSize, stepSize, minQty, minNotional) si están disponibles.
+   - Cobrar comisiones en bps sobre el notional.
+   - Validar cash suficiente (BUY) y antidad disponible (SELL).
+   - Registrar el trade (con metadatos útiles para auditoría) manteniendo un schema_version.
+3) Proveer utilidades de sizing (p. ej. affordable_qty), reporting
+   (equity_curve_dataframe, trades_dataframe, summary) y engancharse al engine
    (mark_to_market).
 
 Diseño
@@ -40,14 +40,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Literal, Dict, Any, Tuple
+from typing import Any, Literal
 
 import pandas as pd
 
-from .trades import Trade
-from src.volmicro.rules import SymbolRules, apply_exchange_rules
-from . import settings
 from src.volmicro.const import SCHEMA_VERSION  # versión del esquema de salida (CSV de trades)
+from src.volmicro.rules import SymbolRules, apply_exchange_rules
+
+from . import settings
+from .trades import Trade
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +75,9 @@ class ExecPreview:
     - notional_before_round:  Notional con exec_price_raw * qty_raw (informativo).
     - notional_after_round:   Notional con exec_price * qty_rounded (base para fee_bps).
     """
+
     valid: bool
-    reason: Optional[str]
+    reason: str | None
     intended_price: float
     exec_price_raw: float
     exec_price: float
@@ -142,10 +144,10 @@ class Portfolio:
 
     # --- Estado derivado / tracking ---
     starting_cash: float = field(init=False)
-    last_price: Optional[float] = None
-    trades: List[Trade] = field(default_factory=list)
-    _trade_meta: List[Dict[str, Any]] = field(default_factory=list)
-    _equity_curve: List[Tuple[pd.Timestamp, float]] | None = None
+    last_price: float | None = None
+    trades: list[Trade] = field(default_factory=list)
+    _trade_meta: list[dict[str, Any]] = field(default_factory=list)
+    _equity_curve: list[tuple[pd.Timestamp, float]] | None = None
 
     # --- Posición y PnL ---
     avg_price: float = 0.0
@@ -153,11 +155,11 @@ class Portfolio:
     realized_pnl_net_fees: bool = False
 
     # --- Reglas de exchange y slippage ---
-    rules: Optional[SymbolRules] = None
+    rules: SymbolRules | None = None
     slippage_bps: float = field(default_factory=lambda: float(settings.SLIPPAGE_BPS))
 
     # --- Identificador de ejecución ---
-    run_id: Optional[str] = None
+    run_id: str | None = None
 
     # ----------------------------------------------------------------------------------
     # Ciclo de vida
@@ -180,7 +182,7 @@ class Portfolio:
     # ----------------------------------------------------------------------------------
     # Helpers de estado
     # ----------------------------------------------------------------------------------
-    def equity(self, price: Optional[float] = None) -> float:
+    def equity(self, price: float | None = None) -> float:
         """
         Devuelve el valor total de la cartera:
           equity = cash + qty * (price o last_price)
@@ -198,7 +200,7 @@ class Portfolio:
         """
         self.last_price = float(price)
 
-    def _record(self, tr: Trade, meta: Optional[Dict[str, Any]] = None) -> None:
+    def _record(self, tr: Trade, meta: dict[str, Any] | None = None) -> None:
         """
         Registra un trade y sus metadatos (alineados por índice).
         """
@@ -215,7 +217,7 @@ class Portfolio:
     # ----------------------------------------------------------------------------------
     # Snapshot de reglas para logging/export (tick/step/minNotional usados)
     # ----------------------------------------------------------------------------------
-    def _rules_snapshot(self) -> Dict[str, Any]:
+    def _rules_snapshot(self) -> dict[str, Any]:
         """
         Devuelve un dict con los parámetros relevantes de reglas usados en la ejecución.
         Soporta objetos `SymbolRules` con distintos nombres de atributo o dicts similares.
@@ -224,7 +226,7 @@ class Portfolio:
         if r is None:
             return {"tickSize_used": None, "stepSize_used": None, "minNotional_used": None}
 
-        def get_any(obj: Any, names: List[str]):
+        def get_any(obj: Any, names: list[str]):
             for n in names:
                 if hasattr(obj, n):
                     return getattr(obj, n)
@@ -263,12 +265,18 @@ class Portfolio:
         # Validación básica
         if qty_raw <= 0 or ref_price <= 0:
             return ExecPreview(
-                valid=False, reason="qty/ref_price no válidos",
-                intended_price=ref_price, exec_price_raw=ref_price, exec_price=ref_price,
-                qty_raw=qty_raw, qty_rounded=0.0,
-                price_round_diff=0.0, qty_round_diff=qty_raw,
+                valid=False,
+                reason="qty/ref_price no válidos",
+                intended_price=ref_price,
+                exec_price_raw=ref_price,
+                exec_price=ref_price,
+                qty_raw=qty_raw,
+                qty_rounded=0.0,
+                price_round_diff=0.0,
+                qty_round_diff=qty_raw,
                 slippage_bps=self.slippage_bps,
-                notional_before_round=0.0, notional_after_round=0.0,
+                notional_before_round=0.0,
+                notional_after_round=0.0,
             )
 
         # 1) Slippage
@@ -277,7 +285,9 @@ class Portfolio:
 
         # 2) Redondeos según reglas del exchange (si existen)
         if self.rules is not None:
-            p_dec, q_dec, ok = apply_exchange_rules(price=exec_price_raw, qty=qty_raw, rules=self.rules)
+            p_dec, q_dec, ok = apply_exchange_rules(
+                price=exec_price_raw, qty=qty_raw, rules=self.rules
+            )
             exec_price = float(p_dec)
             qty_rounded = float(q_dec)
         else:
@@ -293,12 +303,18 @@ class Portfolio:
         # 3) Tras redondeo, la cantidad debe ser > 0
         if qty_rounded <= 0:
             return ExecPreview(
-                valid=False, reason="qty_rounded == 0 tras stepSize",
-                intended_price=ref_price, exec_price_raw=exec_price_raw, exec_price=exec_price,
-                qty_raw=qty_raw, qty_rounded=qty_rounded,
-                price_round_diff=price_round_diff, qty_round_diff=qty_round_diff,
+                valid=False,
+                reason="qty_rounded == 0 tras stepSize",
+                intended_price=ref_price,
+                exec_price_raw=exec_price_raw,
+                exec_price=exec_price,
+                qty_raw=qty_raw,
+                qty_rounded=qty_rounded,
+                price_round_diff=price_round_diff,
+                qty_round_diff=qty_round_diff,
                 slippage_bps=self.slippage_bps,
-                notional_before_round=notional_before, notional_after_round=notional_after,
+                notional_before_round=notional_before,
+                notional_after_round=notional_after,
             )
 
         # 4) Cash suficiente en BUY (incluye fee explícita)
@@ -306,33 +322,51 @@ class Portfolio:
             fee_factor = 1.0 + (self.fee_bps / 10_000.0)
             if notional_after * fee_factor > (self.cash + 1e-9):
                 return ExecPreview(
-                    valid=False, reason="cash insuficiente (notional + fee)",
-                    intended_price=ref_price, exec_price_raw=exec_price_raw, exec_price=exec_price,
-                    qty_raw=qty_raw, qty_rounded=qty_rounded,
-                    price_round_diff=price_round_diff, qty_round_diff=qty_round_diff,
+                    valid=False,
+                    reason="cash insuficiente (notional + fee)",
+                    intended_price=ref_price,
+                    exec_price_raw=exec_price_raw,
+                    exec_price=exec_price,
+                    qty_raw=qty_raw,
+                    qty_rounded=qty_rounded,
+                    price_round_diff=price_round_diff,
+                    qty_round_diff=qty_round_diff,
                     slippage_bps=self.slippage_bps,
-                    notional_before_round=notional_before, notional_after_round=notional_after,
+                    notional_before_round=notional_before,
+                    notional_after_round=notional_after,
                 )
 
         # 5) Reglas de exchange (minNotional/minQty) ya validadas en apply_exchange_rules
         if self.rules is not None and not ok:
             return ExecPreview(
-                valid=False, reason="reglas exchange: minNotional/minQty",
-                intended_price=ref_price, exec_price_raw=exec_price_raw, exec_price=exec_price,
-                qty_raw=qty_raw, qty_rounded=qty_rounded,
-                price_round_diff=price_round_diff, qty_round_diff=qty_round_diff,
+                valid=False,
+                reason="reglas exchange: minNotional/minQty",
+                intended_price=ref_price,
+                exec_price_raw=exec_price_raw,
+                exec_price=exec_price,
+                qty_raw=qty_raw,
+                qty_rounded=qty_rounded,
+                price_round_diff=price_round_diff,
+                qty_round_diff=qty_round_diff,
                 slippage_bps=self.slippage_bps,
-                notional_before_round=notional_before, notional_after_round=notional_after,
+                notional_before_round=notional_before,
+                notional_after_round=notional_after,
             )
 
         # Si todo OK, devolvemos vista previa válida
         return ExecPreview(
-            valid=True, reason=None,
-            intended_price=ref_price, exec_price_raw=exec_price_raw, exec_price=exec_price,
-            qty_raw=qty_raw, qty_rounded=qty_rounded,
-            price_round_diff=price_round_diff, qty_round_diff=qty_round_diff,
+            valid=True,
+            reason=None,
+            intended_price=ref_price,
+            exec_price_raw=exec_price_raw,
+            exec_price=exec_price,
+            qty_raw=qty_raw,
+            qty_rounded=qty_rounded,
+            price_round_diff=price_round_diff,
+            qty_round_diff=qty_round_diff,
             slippage_bps=self.slippage_bps,
-            notional_before_round=notional_before, notional_after_round=notional_after,
+            notional_before_round=notional_before,
+            notional_after_round=notional_after,
         )
 
     # ----------------------------------------------------------------------------------
@@ -343,7 +377,7 @@ class Portfolio:
         Orden de compra:
           - Llama al modelo de ejecución.
           - Si es válida, descuenta cash (incluyendo la fee), aumenta qty y recalcula avg_price.
-          - Registra el trade con metadatos completos (slippage, redondeos, reglas, run_id, schema_version).
+          - Registra trade con metadatos: slippage, redondeos, reglas, run_id, schema_version
         """
         if qty <= 0:
             return
@@ -382,9 +416,17 @@ class Portfolio:
 
         # --- Registro del trade ---
         tr = Trade(
-            ts=ts, symbol=self.symbol, side="BUY", qty=qty, price=price,
-            fee=fee, cash_after=float(self.cash), qty_after=float(self.qty),
-            equity_after=float(eq), realized_pnl=0.0, cum_realized_pnl=self.realized_pnl,
+            ts=ts,
+            symbol=self.symbol,
+            side="BUY",
+            qty=qty,
+            price=price,
+            fee=fee,
+            cash_after=float(self.cash),
+            qty_after=float(self.qty),
+            equity_after=float(eq),
+            realized_pnl=0.0,
+            cum_realized_pnl=self.realized_pnl,
             note=note,
         )
 
@@ -444,7 +486,7 @@ class Portfolio:
         self.realized_pnl += realized
 
         # Efectivo: entra notional menos fee
-        self.cash += (notional - fee)
+        self.cash += notional - fee
 
         # Reducir posición y resetear avg_price si cerramos
         self.qty -= qty
@@ -456,9 +498,17 @@ class Portfolio:
         eq = self.equity(price)
 
         tr = Trade(
-            ts=ts, symbol=self.symbol, side="SELL", qty=qty, price=price,
-            fee=fee, cash_after=float(self.cash), qty_after=float(self.qty),
-            equity_after=float(eq), realized_pnl=realized, cum_realized_pnl=self.realized_pnl,
+            ts=ts,
+            symbol=self.symbol,
+            side="SELL",
+            qty=qty,
+            price=price,
+            fee=fee,
+            cash_after=float(self.cash),
+            qty_after=float(self.qty),
+            equity_after=float(eq),
+            realized_pnl=realized,
+            cum_realized_pnl=self.realized_pnl,
             note=note,
         )
 
@@ -535,28 +585,46 @@ class Portfolio:
              "minNotional_used","schema_version"]
         """
         base_cols = [
-            "ts", "symbol", "side", "qty", "price", "fee",
-            "cash_after", "qty_after", "equity_after",
-            "realized_pnl", "cum_realized_pnl", "note",
+            "ts",
+            "symbol",
+            "side",
+            "qty",
+            "price",
+            "fee",
+            "cash_after",
+            "qty_after",
+            "equity_after",
+            "realized_pnl",
+            "cum_realized_pnl",
+            "note",
         ]
 
         # Si no hay trades aún, devolvemos cabecera completa vacía (base + extra),
         # porque los tests esperan esas columnas aunque no haya filas.
         if not self.trades:
             extra_cols = [
-                "intended_price", "exec_price_raw", "price_round_diff",
-                "qty_raw", "qty_rounded", "qty_round_diff", "slippage_bps",
-                "notional_before_round", "notional_after_round", "rule_check",
-                "run_id", "fee_bps", "schema_version",
-                "tickSize_used", "stepSize_used", "minNotional_used",
+                "intended_price",
+                "exec_price_raw",
+                "price_round_diff",
+                "qty_raw",
+                "qty_rounded",
+                "qty_round_diff",
+                "slippage_bps",
+                "notional_before_round",
+                "notional_after_round",
+                "rule_check",
+                "run_id",
+                "fee_bps",
+                "schema_version",
+                "tickSize_used",
+                "stepSize_used",
+                "minNotional_used",
             ]
             return pd.DataFrame(columns=base_cols + extra_cols)
 
         # Construimos el DF base a partir de los dataclasses Trade
         df = (
-            pd.DataFrame([t.__dict__ for t in self.trades])
-            .sort_values("ts")
-            .reset_index(drop=True)
+            pd.DataFrame([t.__dict__ for t in self.trades]).sort_values("ts").reset_index(drop=True)
         )
 
         # Si tenemos metadatos alineados, los añadimos; si no, devolvemos base ordenada

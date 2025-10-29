@@ -1,0 +1,36 @@
+# .pre-commit-config.yaml
+# --------------------------------------------------------
+# Hooks de pre-commit para mantener el código limpio
+# y coherente antes de cada commit.
+# --------------------------------------------------------
+# Black → formateo automático (estilo uniforme)
+# Ruff  → linting y corrección de errores comunes
+# Mypy  → comprobación de tipos estáticos
+
+repos:
+  # ---------------------------
+  # Formateador Black
+  # ---------------------------
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        args: ["--line-length=100"]
+
+  # ---------------------------
+  # Linter Ruff
+  # ---------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # ---------------------------
+  # Tipado Mypy
+  # ---------------------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy

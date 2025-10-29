@@ -23,8 +23,10 @@ Flujo general (usado desde __main__.py):
 
 import json
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
+
 from . import settings
 
 # === Posibles nombres de columna temporal ===
@@ -103,12 +105,7 @@ def _returns_from_equity(df: pd.DataFrame, use_daily: bool) -> tuple[pd.Series, 
 
     if use_daily:
         # Serie diaria a partir del último valor de cada día (cierre diario de equity)
-        daily_equity = (
-            df.set_index("timestamp")["equity"]
-              .resample("D")
-              .last()
-              .dropna()
-        )
+        daily_equity = df.set_index("timestamp")["equity"].resample("D").last().dropna()
         daily_ret = daily_equity.pct_change().dropna()
         if len(daily_ret) >= 1:
             return daily_ret, "daily"
@@ -128,28 +125,32 @@ def _returns_from_equity(df: pd.DataFrame, use_daily: bool) -> tuple[pd.Series, 
 def calculate_metrics(
     equity_curve_path: str | Path | None = None,
     trades_path: str | Path | None = None,
-    output_dir: str | Path | None = None
+    output_dir: str | Path | None = None,
 ) -> dict:
     """
     Calcula métricas a partir de los CSVs de equity y trades, y guarda summary.json.
 
     Parámetros:
-      - equity_curve_path: ruta a equity_curve.csv (opcional, por defecto en reports/)
-      - trades_path      : ruta a trades.csv (opcional, por defecto en reports/)
-      - output_dir       : directorio donde escribir summary.json (por defecto, settings.REPORTS_DIR)
+      - equity_curve_path:ruta a equity_curve.csv (opcional, por defecto en reports/)
+      - trades_path      :ruta a trades.csv (opcional, por defecto en reports/)
+      - output_dir       :directorio donde escribir summary.json (por defecto, settings.REPORTS_DIR)
 
     Respeta:
       - settings.METRICS_USE_DAILY (True => intentamos base diaria con fallback)
       - settings.METRICS_ANNUALIZATION_DAYS (por defecto 252)
 
     Devuelve:
-      - dict con métricas clave (total_return, annualized_return, volatility, sharpe, max_drawdown, etc.)
+      - dict con métricas clave (total_return, annualized_return, volatility, sharpe, mdd, etc.)
     """
     # === 0) Rutas por defecto basadas en settings ===
     reports_dir = Path(output_dir) if output_dir is not None else settings.REPORTS_DIR
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    equity_path = Path(equity_curve_path) if equity_curve_path is not None else (reports_dir / "equity_curve.csv")
+    equity_path = (
+        Path(equity_curve_path)
+        if equity_curve_path is not None
+        else (reports_dir / "equity_curve.csv")
+    )
     trades_file = Path(trades_path) if trades_path is not None else (reports_dir / "trades.csv")
     summary_path = reports_dir / "summary.json"
 
@@ -185,7 +186,9 @@ def calculate_metrics(
 
     # Annualized return: elevamos de forma simple por días (no compuesta por número de barras)
     # Nota: esto asume que el periodo en días es la unidad de anualización a usar como exponente.
-    annualized_return = (1 + total_return) ** (ann_days / period_days) - 1 if np.isfinite(total_return) else np.nan
+    annualized_return = (
+        (1 + total_return) ** (ann_days / period_days) - 1 if np.isfinite(total_return) else np.nan
+    )
 
     # Volatilidad anualizada: std(ret) * sqrt(ann_days)
     annualized_volatility = ret_std * np.sqrt(ann_days) if np.isfinite(ret_std) else np.nan
@@ -205,13 +208,21 @@ def calculate_metrics(
     # === 4) Lectura de trades para KPIs complementarios (opcional) ===
     trades_df = pd.read_csv(trades_file)
     n_trades = int(len(trades_df)) if not trades_df.empty else 0
-    total_pnl = float(trades_df["pnl"].sum()) if ("pnl" in trades_df.columns and not trades_df.empty) else 0.0
+    total_pnl = (
+        float(trades_df["pnl"].sum())
+        if ("pnl" in trades_df.columns and not trades_df.empty)
+        else 0.0
+    )
 
     # === 5) Componer y redondear resultados (None para no-numéricos) ===
     metrics = {
         "total_return": None if not np.isfinite(total_return) else round(total_return, 6),
-        "annualized_return": None if not np.isfinite(annualized_return) else round(annualized_return, 6),
-        "annualized_volatility": None if not np.isfinite(annualized_volatility) else round(annualized_volatility, 6),
+        "annualized_return": (
+            None if not np.isfinite(annualized_return) else round(annualized_return, 6)
+        ),
+        "annualized_volatility": (
+            None if not np.isfinite(annualized_volatility) else round(annualized_volatility, 6)
+        ),
         "sharpe_ratio": None if not np.isfinite(sharpe_ratio) else round(sharpe_ratio, 4),
         "max_drawdown": None if not np.isfinite(max_drawdown) else round(max_drawdown, 6),
         "n_trades": n_trades,
@@ -221,8 +232,8 @@ def calculate_metrics(
         "equity_end": round(equity1, 2),
         "start_timestamp": t0.isoformat(),
         "end_timestamp": t1.isoformat(),
-        "returns_basis": basis,                # "daily" o "per-bar"
-        "annualization_days": ann_days,        # por transparencia
+        "returns_basis": basis,  # "daily" o "per-bar"
+        "annualization_days": ann_days,  # por transparencia
     }
 
     # === 6) Guardar summary.json ===

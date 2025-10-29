@@ -1,8 +1,31 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+# pyproject.toml
+# --------------------------------------------------------
+# Configuración de formateo (Black) y linting (Ruff)
+# --------------------------------------------------------
+# Este archivo unifica los estilos de código y ordena
+# imports, comillas, longitud de línea, etc.
+# --------------------------------------------------------
 
-[project]
-name = "volmicro"
-version = "0.1.0"
-requires-python = ">=3.11"
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["venv", ".venv", "build", "dist"]
+
+# Selección de reglas activadas:
+# E,F → errores y fallos generales
+# I   → orden correcto de imports
+# UP  → actualizaciones de sintaxis moderna
+# B   → detección de bugs típicos
+lint.select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+# Define el paquete principal para ordenar imports correctamente
+known-first-party = ["volmicro"]
+
+[tool.ruff.format]
+# Usa comillas dobles para uniformidad
+quote-style = "double"

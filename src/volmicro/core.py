@@ -10,7 +10,6 @@ Por ahora incluye:
 
 from dataclasses import dataclass
 from typing import Any
-from pandas import Timestamp
 
 
 @dataclass(frozen=True)
@@ -37,7 +36,8 @@ class Bar:
       pero en la práctica **debería** ser `pandas.Timestamp` tz-aware (UTC).
       En el feed (`binance_feed.iter_bars`) nos aseguramos de eso.
     """
-    ts: Any            # preferiblemente: pandas.Timestamp (tz-aware, UTC)
+
+    ts: Any  # preferiblemente: pandas.Timestamp (tz-aware, UTC)
     open: float
     high: float
     low: float

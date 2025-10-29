@@ -1,21 +1,30 @@
 # scripts/snapshot_settings.py
-import os, json, importlib.util, glob
+import glob
+import importlib.util
+import json
+import os
+
 import pandas as pd
 
 # 1) Intentamos primero en raíz; si no, buscamos el último trades.csv en reports/*
 DEFAULT_TRADES = "trades.csv"
+
 
 def find_trades_path():
     if os.path.exists(DEFAULT_TRADES):
         return DEFAULT_TRADES
     candidates = glob.glob("reports/*/trades.csv")
     if not candidates:
-        raise SystemExit("No existe trades.csv. Ejecuta un backtest o coloca el archivo en reports/*/trades.csv")
+        raise SystemExit(
+            "No existe trades.csv. Ejecuta un backtest o coloca el archivo en reports/*/trades.csv"
+        )
     # Elegimos el más reciente por fecha de modificación
     candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return candidates[0]
 
+
 SETTINGS_PATH = "src/volmicro/settings.py"
+
 
 def import_settings():
     spec = importlib.util.spec_from_file_location("volmicro_settings", SETTINGS_PATH)
@@ -23,12 +32,14 @@ def import_settings():
     spec.loader.exec_module(mod)
     return mod
 
+
 def to_jsonable(obj):
     try:
         json.dumps(obj)
         return obj
     except Exception:
         return str(obj)
+
 
 def main():
     trades_path = find_trades_path()
@@ -53,6 +64,7 @@ def main():
         print(f"  -> escrito {out_path}")
 
     print(f"OK: snapshots creados para {len(run_ids)} run(s)")
+
 
 if __name__ == "__main__":
     main()

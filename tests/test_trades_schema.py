@@ -14,9 +14,9 @@ Este test asume que antes se ha ejecutado un backtest que dejó un `trades.csv`
 en `reports/<...>/trades.csv` o, como fallback, en la raíz del proyecto.
 """
 
-import os
 import glob
-import math
+import os
+
 import pandas as pd
 import pytest
 
@@ -25,18 +25,36 @@ import pytest
 # --------------------------------------------------------------------
 REQUIRED_COLS = [
     # --- columnas base (Trade dataclass) ---
-    "ts", "symbol", "side", "qty", "price", "fee",
-    "cash_after", "qty_after", "equity_after",
-    "realized_pnl", "cum_realized_pnl", "note",
-
+    "ts",
+    "symbol",
+    "side",
+    "qty",
+    "price",
+    "fee",
+    "cash_after",
+    "qty_after",
+    "equity_after",
+    "realized_pnl",
+    "cum_realized_pnl",
+    "note",
     # --- metadatos de ejecución ---
-    "intended_price", "exec_price_raw", "price_round_diff",
-    "qty_raw", "qty_rounded", "qty_round_diff", "slippage_bps",
-    "notional_before_round", "notional_after_round", "rule_check",
-    "run_id", "fee_bps", "schema_version",
-
+    "intended_price",
+    "exec_price_raw",
+    "price_round_diff",
+    "qty_raw",
+    "qty_rounded",
+    "qty_round_diff",
+    "slippage_bps",
+    "notional_before_round",
+    "notional_after_round",
+    "rule_check",
+    "run_id",
+    "fee_bps",
+    "schema_version",
     # --- snapshot de reglas del exchange (para auditoría) ---
-    "tickSize_used", "stepSize_used", "minNotional_used",
+    "tickSize_used",
+    "stepSize_used",
+    "minNotional_used",
 ]
 
 
@@ -57,10 +75,14 @@ def find_trades_path() -> str | None:
     return None
 
 
-@pytest.mark.skipif(find_trades_path() is None, reason="No se encontró trades.csv. Ejecuta un backtest primero.")
+@pytest.mark.skipif(
+    find_trades_path() is None, reason="No se encontró trades.csv. Ejecuta un backtest primero."
+)
 def test_schema_and_integrity():
     path = find_trades_path()
-    assert path is not None, "No se pudo resolver la ruta a trades.csv (find_trades_path devolvió None)"
+    assert (
+        path is not None
+    ), "No se pudo resolver la ruta a trades.csv (find_trades_path devolvió None)"
     df = pd.read_csv(path)
 
     # -----------------------------
@@ -77,7 +99,9 @@ def test_schema_and_integrity():
     # -----------------------------
     # 3) run_id presente y no vacío
     # -----------------------------
-    assert df["run_id"].notna().all() and (df["run_id"].astype(str) != "").all(), "run_id vacío o NaN"
+    assert (
+        df["run_id"].notna().all() and (df["run_id"].astype(str) != "").all()
+    ), "run_id vacío o NaN"
 
     # -----------------------------
     # 4) schema_version correcto
@@ -115,4 +139,6 @@ def test_schema_and_integrity():
 
     # (opcional) side válido
     valid_sides = set(["BUY", "SELL"])
-    assert set(df["side"].unique()).issubset(valid_sides), f"Sides inesperados: {set(df['side'].unique()) - valid_sides}"
+    assert set(df["side"].unique()).issubset(
+        valid_sides
+    ), f"Sides inesperados: {set(df['side'].unique()) - valid_sides}"
