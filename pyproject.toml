@@ -1,10 +1,49 @@
 # pyproject.toml
-# --------------------------------------------------------
-# Configuración de formateo (Black) y linting (Ruff)
-# --------------------------------------------------------
-# Este archivo unifica los estilos de código y ordena
-# imports, comillas, longitud de línea, etc.
-# --------------------------------------------------------
+# =====================================================================
+# Proyecto: volmicro
+# Configuración completa de empaquetado + estilo + dependencias + dev
+# =====================================================================
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "volmicro"
+version = "0.1.0"
+description = "Motor de backtesting y análisis cuantitativo para criptomercados."
+readme = "README.md"
+requires-python = ">=3.11"
+
+# --- Dependencias necesarias para ejecutar el proyecto ---
+dependencies = [
+  "pandas>=2.2",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+  "binance-connector>=3.7",
+]
+
+# --- Dependencias adicionales (extra 'dev') ---
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "mypy>=1.11",
+  "ruff>=0.6.9",
+  "black>=24.8.0",
+  "pre-commit>=3.7",
+]
+
+# --- Estructura del proyecto: layout con carpeta src/ ---
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["volmicro*"]
+
+# =====================================================================
+# Configuración de herramientas de formato y linting
+# =====================================================================
 
 [tool.black]
 line-length = 100
@@ -23,9 +62,7 @@ extend-exclude = ["venv", ".venv", "build", "dist"]
 lint.select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
-# Define el paquete principal para ordenar imports correctamente
 known-first-party = ["volmicro"]
 
 [tool.ruff.format]
-# Usa comillas dobles para uniformidad
 quote-style = "double"
