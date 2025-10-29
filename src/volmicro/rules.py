@@ -1,25 +1,72 @@
+# src/volmicro/rules.py
+"""
+Reglas del exchange (Binance Spot) y utilidades de redondeo/validación.
+
+Objetivos del módulo
+--------------------
+1) Obtener desde Binance (o caché local) los **filtros** de trading por símbolo:
+   - PRICE_FILTER:  tick_size     (incremento mínimo de precio)
+   - LOT_SIZE:      step_size     (incremento mínimo de cantidad), min_qty, max_qty
+   - NOTIONAL:      min_notional  (notional mínimo = price * qty)
+2) Representarlos en una estructura inmutable (`SymbolRules`) cómoda de usar.
+3) Proveer *helpers* para:
+   - Redondear `price` a `tick_size` (hacia abajo).
+   - Redondear `qty` a `step_size`  (hacia abajo).
+   - Validar `min_qty` y `min_notional`.
+4) Cachear en disco (en `rules/<SYMBOL>_rules.json`) para evitar hits innecesarios a la API.
+
+Integración
+-----------
+- `__main__.py`: llama `load_symbol_rules(...)` al arrancar y lo inyecta en `Portfolio.set_execution_rules(...)`.
+- `Portfolio._apply_execution_model(...)`: usa `apply_exchange_rules(price, qty, rules)` para
+  redondear y validar `minQty/minNotional` antes de ejecutar.
+
+Decisiones
+----------
+- Redondeos son **floor** (ROUND_DOWN) al múltiplo permitido para no arriesgar rechazo del exchange.
+- `SymbolRules` es **dataclass frozen** (inmutable) => seguridad y trazabilidad.
+- Cache en JSON con strings para Decimals (sin pérdida de precisión).
+"""
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from . import settings
 from .binance_client import BinanceClient
 
 
+# ======================================================================================
+# Representación de reglas por símbolo
+# ======================================================================================
 @dataclass(frozen=True)
 class SymbolRules:
-    symbol: str
-    tick_size: Decimal           # incremento mínimo de precio
-    step_size: Decimal           # incremento mínimo de cantidad
-    min_qty: Optional[Decimal]   # cantidad mínima (si aplica)
-    max_qty: Optional[Decimal]   # cantidad máxima (si aplica)
-    min_notional: Optional[Decimal]  # valor mínimo de orden (precio*qty)
-    raw_filters: Dict[str, Any]  # filtros completos por si queremos depurar
+    """
+    Reglas relevantes para un `symbol` en Binance Spot.
 
+    Campos
+    ------
+    symbol       : str
+    tick_size    : Decimal       (PRICE_FILTER.tickSize)
+    step_size    : Decimal       (LOT_SIZE.stepSize o MARKET_LOT_SIZE.stepSize)
+    min_qty      : Optional[Decimal]  (LOT_SIZE.minQty, si existe)
+    max_qty      : Optional[Decimal]  (LOT_SIZE.maxQty, si existe)
+    min_notional : Optional[Decimal]  (NOTIONAL.minNotional o MIN_NOTIONAL.minNotional)
+    raw_filters  : Dict[str, Any]     (copia cruda para debugging/auditoría)
+    """
+    symbol: str
+    tick_size: Decimal
+    step_size: Decimal
+    min_qty: Optional[Decimal]
+    max_qty: Optional[Decimal]
+    min_notional: Optional[Decimal]
+    raw_filters: Dict[str, Any]
+
+    # Serialización a JSON (guardamos Decimals como strings para no perder precisión)
     def to_json(self) -> Dict[str, Any]:
         return {
             "symbol": self.symbol,
@@ -33,6 +80,7 @@ class SymbolRules:
 
     @staticmethod
     def from_json(d: Dict[str, Any]) -> "SymbolRules":
+        # Inversa de to_json
         return SymbolRules(
             symbol=d["symbol"],
             tick_size=Decimal(d["tick_size"]),
@@ -44,37 +92,51 @@ class SymbolRules:
         )
 
 
+# ======================================================================================
+# Utilidades de precisión y redondeo hacia abajo (floor al múltiplo más cercano)
+# ======================================================================================
+
 def _dec(x: str | float | int) -> Decimal:
+    """Crea un Decimal con precisión estable a partir de str/float/int."""
     return Decimal(str(x))
 
 
 def _floor_to_step(value: Decimal, step: Decimal) -> Decimal:
     """
-    Redondeo hacia abajo al múltiplo más cercano de 'step'.
-    Evita pasar del tick/step permitido.
+    Redondeo **hacia abajo** (ROUND_DOWN) al múltiplo más cercano de `step`.
+
+    Ejemplo: value=1.234, step=0.01  => 1.23
+             value=100,   step=5     => 100
+             value=102,   step=5     => 100
     """
     if step <= 0:
         return value
-    # número de pasos enteros
-    steps = (value / step).to_integral_value(rounding=ROUND_DOWN)
-    return (steps * step).normalize()
+    steps = (value / step).to_integral_value(rounding=ROUND_DOWN)  # número entero de pasos
+    return (steps * step).normalize()  # .normalize() quita ceros sobrantes
 
 
 def round_price(price: float | Decimal, tick_size: Decimal) -> Decimal:
-    """Precio redondeado hacia abajo al tick permitido."""
+    """Redondea el precio hacia abajo al tick permitido por el exchange."""
     return _floor_to_step(_dec(price), tick_size)
 
 
 def round_qty(qty: float | Decimal, step_size: Decimal) -> Decimal:
-    """Cantidad redondeada hacia abajo al step permitido."""
+    """Redondea la cantidad hacia abajo al step permitido por el exchange."""
     return _floor_to_step(_dec(qty), step_size)
 
 
-def is_order_valid(price: Decimal, qty: Decimal,
-                   min_notional: Optional[Decimal],
-                   min_qty: Optional[Decimal]) -> bool:
+def is_order_valid(
+    price: Decimal,
+    qty: Decimal,
+    min_notional: Optional[Decimal],
+    min_qty: Optional[Decimal],
+) -> bool:
     """
-    Valida reglas mínimas básicas: notional y cantidad mínima.
+    Valida reglas mínimas básicas:
+      - min_qty:      qty >= min_qty (si aplica)
+      - min_notional: price * qty >= min_notional (si aplica)
+
+    Devuelve True si pasa todos los checks.
     """
     if min_qty is not None and qty < min_qty:
         return False
@@ -83,9 +145,30 @@ def is_order_valid(price: Decimal, qty: Decimal,
     return True
 
 
+# ======================================================================================
+# Parseo de exchange_info de Binance a SymbolRules
+# ======================================================================================
+
 def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any]) -> SymbolRules:
-    """Extrae tickSize, stepSize, minQty, maxQty, minNotional de exchangeInfo."""
-    # Buscar el símbolo
+    """
+    Extrae tickSize, stepSize, minQty, maxQty y minNotional de la respuesta `exchangeInfo`.
+
+    Estructura típica:
+    {
+      "symbols": [
+        {
+          "symbol": "BTCUSDT",
+          "filters": [
+            {"filterType":"PRICE_FILTER", "tickSize":"0.10", ...},
+            {"filterType":"LOT_SIZE",     "stepSize":"0.00001000","minQty":"0.00001000","maxQty":"9000.00000000"},
+            {"filterType":"NOTIONAL",     "minNotional":"5.00"},
+            ...
+          ]
+        }
+      ]
+    }
+    """
+    # 1) Buscar la entrada del símbolo
     syminfo = None
     for s in ex_info.get("symbols", []):
         if s.get("symbol") == symbol:
@@ -94,11 +177,12 @@ def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any])
     if syminfo is None:
         raise ValueError(f"Símbolo {symbol} no encontrado en exchangeInfo")
 
-    tick_size = None
-    step_size = None
-    min_qty = None
-    max_qty = None
-    min_notional = None
+    # 2) Extraer filtros
+    tick_size: Optional[Decimal] = None
+    step_size: Optional[Decimal] = None
+    min_qty: Optional[Decimal] = None
+    max_qty: Optional[Decimal] = None
+    min_notional: Optional[Decimal] = None
 
     filters = syminfo.get("filters", [])
     raw_filters = {f.get("filterType"): f for f in filters}
@@ -108,21 +192,19 @@ def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any])
         if ftype == "PRICE_FILTER":
             tick_size = _dec(f["tickSize"])
         elif ftype in ("LOT_SIZE", "MARKET_LOT_SIZE"):
-            # LOT_SIZE: para órdenes limit; MARKET_LOT_SIZE: para market (en SPOT a veces aparece)
             step_size = _dec(f["stepSize"])
-            # minQty/maxQty pueden estar en LOT_SIZE
             if "minQty" in f:
                 min_qty = _dec(f["minQty"])
             if "maxQty" in f:
                 max_qty = _dec(f["maxQty"])
         elif ftype in ("NOTIONAL", "MIN_NOTIONAL"):
-            # Binance Spot moderno usa "NOTIONAL" con "minNotional"
-            # Algunos entornos aún exponen "MIN_NOTIONAL"
             if "minNotional" in f:
                 min_notional = _dec(f["minNotional"])
 
     if tick_size is None or step_size is None:
-        raise ValueError(f"Faltan PRICE_FILTER/LOT_SIZE para {symbol}: tick_size={tick_size}, step_size={step_size}")
+        raise ValueError(
+            f"Faltan PRICE_FILTER/LOT_SIZE para {symbol}: tick_size={tick_size}, step_size={step_size}"
+        )
 
     return SymbolRules(
         symbol=symbol,
@@ -135,30 +217,47 @@ def _parse_symbol_rules_from_exchange_info(symbol: str, ex_info: Dict[str, Any])
     )
 
 
+# ======================================================================================
+# Acceso a Binance y cache local
+# ======================================================================================
+
 def fetch_symbol_rules(symbol: str, testnet: bool) -> SymbolRules:
     """
-    Llama a Binance y devuelve las reglas del símbolo.
-    Usa el cliente del proyecto (mismo testnet/mainnet que settings).
+    Descarga `exchangeInfo` de Binance y lo parsea a `SymbolRules`.
+    Usa el mismo entorno (testnet/mainnet) que el resto del proyecto.
     """
     client = BinanceClient(testnet=testnet)
-    # binance-connector (Spot) -> exchange_info(symbol="BTCUSDT")
-    ex_info = client.client.spot().exchange_info(symbol=symbol) if hasattr(client.client, "spot") else client.client.exchange_info(symbol=symbol)
+    # En binance-connector moderno, `Spot.exchange_info` acepta symbol=...
+    ex_info = client.exchange_info(symbol=symbol)
     return _parse_symbol_rules_from_exchange_info(symbol, ex_info)
 
 
 def _rules_cache_path(symbol: str) -> Path:
-    """Ruta al fichero de cache JSON del símbolo en settings.RULES_DIR."""
+    """
+    Devuelve la ruta de la cache JSON para el símbolo, dentro de settings.RULES_DIR.
+    Ej.: rules/BTCUSDT_rules.json
+    """
     return Path(settings.RULES_DIR) / f"{symbol}_rules.json"
 
 
-def load_symbol_rules(symbol: str, testnet: bool,
-                      use_cache: bool = True, refresh: bool = False) -> SymbolRules:
+def load_symbol_rules(
+    symbol: str,
+    testnet: bool,
+    use_cache: bool = True,
+    refresh: bool = False,
+) -> SymbolRules:
     """
-    Carga reglas desde cache (rules/<symbol>_rules.json) o las descarga de Binance.
-    - use_cache=True: intenta leer del disco si existe
-    - refresh=True : fuerza a descargar de Binance y sobreescribir cache
+    Carga reglas desde cache (si existe y `use_cache=True`) o las descarga de Binance.
+
+    - use_cache=True: prioriza leer rules/<symbol>_rules.json si existe.
+    - refresh=True  : ignora cache, fuerza descarga y sobrescribe.
+
+    Flujo:
+      1) Si hay cache válida y no pedimos refresh => cargar y devolver.
+      2) Si no, llamar `fetch_symbol_rules(...)`, guardar en cache y devolver.
     """
     cache_path = _rules_cache_path(symbol)
+
     if use_cache and cache_path.exists() and not refresh:
         with open(cache_path, "r") as f:
             data = json.load(f)
@@ -171,14 +270,20 @@ def load_symbol_rules(symbol: str, testnet: bool,
     return rules
 
 
-# === Helpers de integración a usar desde portfolio/engine ===
+# ======================================================================================
+# Helper de integración: aplicar reglas a (price, qty)
+# ======================================================================================
 
-def apply_exchange_rules(price: float | Decimal,
-                         qty: float | Decimal,
-                         rules: SymbolRules) -> tuple[Decimal, Decimal, bool]:
+def apply_exchange_rules(
+    price: float | Decimal,
+    qty: float | Decimal,
+    rules: SymbolRules,
+) -> tuple[Decimal, Decimal, bool]:
     """
-    Redondea precio/cantidad según tick/step y valida minQty/minNotional.
-    Devuelve (price_rounded, qty_rounded, is_valid).
+    Redondea precio y cantidad a los mínimos permitidos y valida minQty/minNotional.
+
+    Devuelve:
+      (price_rounded: Decimal, qty_rounded: Decimal, is_valid: bool)
     """
     p = round_price(price, rules.tick_size)
     q = round_qty(qty, rules.step_size)
