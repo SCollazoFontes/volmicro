@@ -160,6 +160,7 @@ class Portfolio:
 
     # --- Identificador de ejecución ---
     run_id: str | None = None
+    reports_dir: str | None = None
 
     # ----------------------------------------------------------------------------------
     # Ciclo de vida

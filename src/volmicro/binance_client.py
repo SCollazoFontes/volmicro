@@ -1,226 +1,271 @@
 # src/volmicro/binance_client.py
 """
-Cliente mínimo para datos de Binance Spot (testnet/mainnet).
+Cliente de Binance (testnet/mainnet) con utilidades de descarga de klines.
 
-Objetivos:
-- Proporcionar una interfaz sencilla para descargar klines (OHLCV) y devolverlos
-  como un DataFrame bien tipado, indexado por UTC y listo para consumir en el feed.
-- Abstraer la elección del endpoint base (testnet vs mainnet).
-- Mantener compatibilidad con código antiguo mediante un wrapper funcional.
-- Ofrecer (opcionalmente) exchange_info para el módulo de reglas.
+Características:
+- `get_klines(..., start, end)` admite rango temporal por:
+  * fecha ISO (YYYY-MM-DD),
+  * timestamp en segundos,
+  * timestamp en milisegundos.
+- Paginación automática (límite de 1000 velas por llamada según Binance).
+- Devuelve un DataFrame OHLCV con columnas estándar para `iter_bars`.
 
 Notas:
-- Este cliente usa binance-connector (paquete `binance-connector-python`).
-- Para klines públicos no necesitas API key/secret; para otros endpoints puede ser necesario.
-- El DataFrame resultante:
-    * Índice: `openTime` en UTC (tz-aware).
-    * Columnas: `open`, `high`, `low`, `close`, `volume` en float64.
-- Validamos columnas y tipos para atrapar sorpresas tempranas.
+- En testnet, la API no siempre expone todo el histórico. Úsalo para pruebas.
+- En mainnet, se respeta el límite de 1000, por lo que se pagina cuando hace falta.
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Any, cast
+from datetime import UTC, datetime
+from typing import Any, TypedDict, cast
 
 import pandas as pd
 from binance.spot import Spot
 
-# Endpoints base: testnet y mainnet
-_TESTNET_BASE = "https://testnet.binance.vision"
-_MAINNET_BASE = "https://api.binance.com"
+# --------------------------------------------------------------------------------------
+# Tipos y constantes
+# --------------------------------------------------------------------------------------
 
-log = logging.getLogger(__name__)
+
+class KlineRow(TypedDict):
+    open_time: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    close_time: int
+
+
+# Mapeo de intervalos Binance → milisegundos
+_INTERVAL_TO_MS: dict[str, int] = {
+    "1s": 1_000,
+    "1m": 60_000,
+    "3m": 3 * 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
+    "1h": 60 * 60_000,
+    "2h": 2 * 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "6h": 6 * 60 * 60_000,
+    "8h": 8 * 60 * 60_000,
+    "12h": 12 * 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+    "3d": 3 * 24 * 60 * 60_000,
+    "1w": 7 * 24 * 60 * 60_000,
+    "1M": 30 * 24 * 60 * 60_000,  # aproximación
+}
+
+
+# --------------------------------------------------------------------------------------
+# Clase cliente
+# --------------------------------------------------------------------------------------
 
 
 class BinanceClient:
     """
-    Pequeño envoltorio alrededor de `binance.spot.Spot`.
+    Wrapper mínimo sobre `binance-connector` para separar dependencias del resto del código.
 
-    Parámetros
-    ----------
-    testnet : bool
-        True para usar el endpoint de testnet, False para mainnet.
-    api_key : Optional[str]
-        Clave de API (no requerida para klines públicos).
-    api_secret : Optional[str]
-        Secreta de API (no requerida para klines públicos).
-
-    Atributos
-    ---------
-    client : Spot
-        Instancia del cliente de la librería oficial (expuesto para compatibilidad
-        con código que desee acceder a métodos no envueltos aquí).
+    Atributos:
+      - client: instancia de Spot (testnet o mainnet)
     """
 
-    def __init__(
-        self,
-        testnet: bool = True,
-        api_key: str | None = None,
-        api_secret: str | None = None,
-    ):
-        base_url = _TESTNET_BASE if testnet else _MAINNET_BASE
+    client: Spot
 
-        # NOTA: para endpoints públicos (klines) puedes no pasar api_key/secret.
-        # Si en el futuro quieres firmar peticiones (órdenes, account, etc.),
-        # añade aquí las credenciales o léelas desde settings/.env.
-        kwargs: dict[str, Any] = {"base_url": base_url}
-        if api_key:
-            kwargs["api_key"] = api_key
-        if api_secret:
-            kwargs["api_secret"] = api_secret
+    def __init__(self, testnet: bool = False) -> None:
+        """
+        Inicializa el cliente Spot. Usa credenciales de entorno si existen.
 
-        self.client: Spot = Spot(**kwargs)
+        Variables de entorno soportadas por binance-connector (si las usas):
+        - BINANCE_API_KEY
+        - BINANCE_API_SECRET
+        """
+        if testnet:
+            self.client = Spot(base_url="https://testnet.binance.vision")
+        else:
+            self.client = Spot()
 
-    # ---------------------------------------------------------------------
-    # get_klines: descarga velas y devuelve un DataFrame listo para el feed
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # exchange_info
+    # ------------------------------------------------------------------
+
+    def exchange_info(self, symbol: str | None = None) -> dict[str, Any]:
+        """
+        Devuelve el `exchangeInfo` de Binance. Si `symbol` no es None, lo filtra.
+        """
+        if symbol:
+            return cast(dict[str, Any], self.client.exchange_info(symbol=symbol))
+        return cast(dict[str, Any], self.client.exchange_info())
+
+    # ------------------------------------------------------------------
+    # get_klines (con rango temporal opcional y paginación)
+    # ------------------------------------------------------------------
+
     def get_klines(
         self,
         symbol: str,
         interval: str,
-        limit: int = 500,
-        start_ms: int | None = None,
-        end_ms: int | None = None,
+        limit: int | None = None,
+        start: str | int | None = None,
+        end: str | int | None = None,
     ) -> pd.DataFrame:
         """
-        Descarga klines (velas) de Binance Spot y devuelve un DataFrame con:
-        - Índice: `openTime` (UTC, tz-aware).
-        - Columnas: `open`, `high`, `low`, `close`, `volume` (float64).
+        Descarga klines (OHLCV) para `symbol` y `interval`.
 
-        Parámetros
-        ----------
-        symbol : str
-            Símbolo, p. ej. "BTCUSDT".
-        interval : str
-            Intervalo de vela, p. ej. "1m", "1h", "1d", etc.
-        limit : int
-            Número máximo de velas a recuperar (típicamente hasta 1000).
-        start_ms : Optional[int]
-            Timestamp de inicio en milisegundos (opcional).
-        end_ms : Optional[int]
-            Timestamp de fin en milisegundos (opcional).
+        Modos de uso:
+        A) Bloque simple por `limit`:
+           df = get_klines("BTCUSDT", "1h", limit=500)
+        B) Rango temporal (paginado auto):
+           df = get_klines("BTCUSDT", "1h", start="2024-01-01", end="2024-03-01")
 
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame indexado por `openTime` (UTC), con columnas OHLCV en float64.
-
-        Raises
-        ------
-        ValueError
-            Si faltan columnas esperadas o si el índice no es tz-aware.
-        Exception
-            Propaga cualquier error de red o de la API subyacente.
+        - `start`/`end` aceptan: "YYYY-MM-DD", timestamp (s), timestamp (ms)
+        - Si se pasa `start` o `end`, se ignora `limit` y se pagina hasta cubrir el rango.
+        - Devuelve DataFrame con columnas:
+          [open_time, open, high, low, close, volume, close_time]
         """
-        # Defensivo: clamp de limit (Binance suele permitir hasta 1000)
-        if limit <= 0:
-            limit = 1
-        if limit > 1000:
-            limit = 1000
+        if start is None and end is None:
+            # === Modo por límite directo (una sola llamada) ===
+            raw = self.client.klines(symbol=symbol, interval=interval, limit=limit or 500)
+            parsed_rows: list[KlineRow] = [self._parse_kline_row(k) for k in raw]
+            return self._rows_to_df(parsed_rows)
 
-        # Llamada directa al endpoint klines
-        # Firmas posibles: klines(symbol, interval, **kwargs)
-        data: list[list[Any]] = self.client.klines(
-            symbol=symbol,
-            interval=interval,
-            limit=limit,
-            startTime=start_ms,
-            endTime=end_ms,
+        # === Modo por rango temporal (paginación) ===
+        start_ms = self._to_millis(start) if start is not None else None
+        end_ms = self._to_millis(end) if end is not None else None
+        step_ms = self._interval_ms(interval)
+
+        acc_rows: list[KlineRow] = []
+        cursor = (
+            start_ms  # si es None, Binance traerá las últimas (no recomendado para rangos largos)
         )
 
-        # La API devuelve una lista de listas con 12 campos por vela:
-        # [ openTime, open, high, low, close, volume, closeTime,
-        #   quoteAssetVolume, numTrades, takerBuyBase, takerBuyQuote, ignore ]
-        df = pd.DataFrame(
-            data,
-            columns=[
-                "openTime",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "closeTime",
-                "quoteAssetVolume",
-                "numTrades",
-                "takerBuyBase",
-                "takerBuyQuote",
-                "ignore",
-            ],
+        while True:
+            params: dict[str, Any] = {"limit": 1000}
+            if cursor is not None:
+                params["startTime"] = cursor
+            if end_ms is not None:
+                params["endTime"] = end_ms
+
+            chunk = self.client.klines(symbol=symbol, interval=interval, **params)
+            if not chunk:
+                break
+
+            parsed_chunk: list[KlineRow] = [self._parse_kline_row(k) for k in chunk]
+            acc_rows.extend(parsed_chunk)
+
+            # Avanzamos el cursor al final del último kline + 1 intervalo
+            last_open = parsed_chunk[-1]["open_time"]
+            next_cursor = last_open + step_ms
+
+            # Evitar bucles si no hay progreso
+            if cursor is not None and next_cursor <= cursor:
+                break
+            cursor = next_cursor
+
+            # Si ya pasamos de end_ms (si existe), paramos
+            if end_ms is not None and cursor >= end_ms:
+                break
+
+            # Si el chunk trajo menos de 1000, probablemente no hay más
+            if len(parsed_chunk) < 1000:
+                break
+
+        # Deduplicar por open_time por si el último chunk pisa límites
+        if acc_rows:
+            acc_rows.sort(key=lambda r: r["open_time"])
+            dedup: dict[int, KlineRow] = {r["open_time"]: r for r in acc_rows}
+            acc_rows = list(dedup.values())
+            acc_rows.sort(key=lambda r: r["open_time"])
+
+        return self._rows_to_df(acc_rows)
+
+    # ------------------------------------------------------------------
+    # Helpers internos
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_kline_row(k: list[Any]) -> KlineRow:
+        """
+        Formato de kline de Binance:
+        [
+          0 open time (ms),
+          1 open,
+          2 high,
+          3 low,
+          4 close,
+          5 volume,
+          6 close time (ms),
+          7 quote asset vol,
+          8 num trades,
+          9 taker buy base,
+          10 taker buy quote,
+          11 ignore
+        ]
+        """
+        return KlineRow(
+            open_time=int(k[0]),
+            open=float(k[1]),
+            high=float(k[2]),
+            low=float(k[3]),
+            close=float(k[4]),
+            volume=float(k[5]),
+            close_time=int(k[6]),
         )
 
-        # Convertimos `openTime` a datetime con tz UTC y lo ponemos como índice
-        df["openTime"] = pd.to_datetime(df["openTime"], unit="ms", utc=True)
-        df = df.set_index("openTime")[["open", "high", "low", "close", "volume"]]
-
-        # Tipos numéricos consistentes
-        df = df.astype(
-            {
-                "open": "float64",
-                "high": "float64",
-                "low": "float64",
-                "close": "float64",
-                "volume": "float64",
-            }
-        )
-
-        # Validaciones defensivas (fallar pronto si algo inesperado ocurre)
-        expected = {"open", "high", "low", "close", "volume"}
-        missing = expected - set(df.columns)
-        if missing:
-            raise ValueError(f"Faltan columnas en klines: {missing}")
-        if df.index.tz is None:
-            # Debe ser tz-aware (UTC) para no mezclar husos a posteriori
-            raise ValueError("El índice de klines debe ser tz-aware (UTC).")
-
-        # opcional: eliminar duplicados y asegurar orden temporal
-        df = df[~df.index.duplicated()].sort_index()
-
+    @staticmethod
+    def _rows_to_df(rows: list[KlineRow]) -> pd.DataFrame:
+        """Convierte lista de KlineRow en DataFrame OHLCV ordenado por open_time."""
+        if not rows:
+            return pd.DataFrame(
+                columns=["open_time", "open", "high", "low", "close", "volume", "close_time"]
+            )
+        df = pd.DataFrame(rows)
+        df.sort_values("open_time", inplace=True)
+        df.reset_index(drop=True, inplace=True)
         return df
 
-    # ---------------------------------------------------------------------
-    # exchange_info: utilidad opcional para reglas del exchange
-    # ---------------------------------------------------------------------
-    def exchange_info(self, symbol: str | None = None) -> dict:
+    @staticmethod
+    def _interval_ms(interval: str) -> int:
+        """Devuelve el tamaño del intervalo en milisegundos (ValueError si no soportado)."""
+        ms = _INTERVAL_TO_MS.get(interval)
+        if ms is None:
+            raise ValueError(f"Intervalo no soportado: {interval}")
+        return ms
+
+    @staticmethod
+    def _to_millis(x: str | int) -> int:
         """
-        Devuelve el `exchangeInfo` de Binance. Si `symbol` no es None, lo filtra
-        al símbolo dado (según soporte del conector).
+        Convierte fecha o timestamp a milisegundos (UTC).
 
-        Se expone por si `rules.py` prefiere delegar la llamada en el cliente.
+        Acepta:
+          - "YYYY-MM-DD"  → 00:00:00 UTC de ese día
+          - timestamp en segundos (>= 1e10 asume ms)
+          - timestamp en milisegundos
+          - ISO completo (e.g., "2024-01-01T12:34:56+00:00")
         """
-        if symbol:
-            # Casteo explícito para satisfacer a mypy (el cliente retorna Any)
-            return cast(dict[str, Any], self.client.exchange_info(symbol=symbol))
+        if isinstance(x, int):
+            # Heurística: si es "muy grande" lo tratamos como ms
+            return x if x > 10_000_000_000 else x * 1_000
 
-        # Casteo explícito para la rama sin símbolo
-        return cast(dict[str, Any], self.client.exchange_info())
+        s = str(x).strip()
+        # ¿Solo fecha?
+        if len(s) == 10 and s[4] == "-" and s[7] == "-":
+            dt = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=UTC)
+            return int(dt.timestamp() * 1_000)
 
+        # Si es numérico en str
+        if s.isdigit():
+            val = int(s)
+            return val if val > 10_000_000_000 else val * 1_000
 
-# --------------------------------------------------------------------------------
-# Wrapper funcional de compatibilidad (API "antigua" que usaba función suelta)
-# --------------------------------------------------------------------------------
-def get_klines_df(
-    symbol: str,
-    interval: str,
-    limit: int = 500,
-    testnet: bool = True,
-    start_ms: int | None = None,
-    end_ms: int | None = None,
-) -> pd.DataFrame:
-    """
-    Compatibilidad con código legado que esperaba una función en lugar de una clase.
-
-    Internamente instancia `BinanceClient(testnet=...)` y llama a `get_klines`.
-
-    Ejemplo:
-        df = get_klines_df("BTCUSDT", "1h", limit=200, testnet=True)
-    """
-    client = BinanceClient(testnet=testnet)
-    return client.get_klines(
-        symbol=symbol,
-        interval=interval,
-        limit=limit,
-        start_ms=start_ms,
-        end_ms=end_ms,
-    )
+        # Último recurso: intentar parseo completo ISO
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception as e:
+            # Ruff B904: encadenar la excepción original
+            raise ValueError(f"No se reconoce formato de fecha/timestamp: {x!r}") from e
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return int(dt.timestamp() * 1_000)

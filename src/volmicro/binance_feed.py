@@ -1,138 +1,132 @@
 # src/volmicro/binance_feed.py
 """
-Módulo de *feed* (fuente de datos) que convierte un DataFrame de OHLCV en una
-secuencia de objetos `Bar` (inmutables) consumibles por el `engine`.
+Generador de barras (`Bar`) a partir de un DataFrame OHLCV.
 
-¿Por qué este paso intermedio?
-- Aísla el formato "crudo" de la descarga (DataFrame) del formato "operativo" (Bar).
-- Permite validar y normalizar **una sola vez** (tipos, índice, orden, duplicados).
-- Hace el loop del motor (`engine.run_engine`) más limpio y predecible.
+Novedad:
+- Robustez del índice temporal: si el DataFrame llega con RangeIndex o sin tz,
+  se convierte a `DatetimeIndex` en UTC a partir de `open_time` (ms) o `time`.
+- Esto evita errores tipo: AttributeError: 'RangeIndex' object has no attribute 'tz'
 
-Interfaz:
----------
-- `iter_bars(df: pd.DataFrame, symbol: str) -> Iterator[Bar]`
-
-  * df: DataFrame con índice de tiempo (tz-aware, UTC) y columnas:
-        ["open", "high", "low", "close", "volume"] en float.
-        Este df es el que devuelve `BinanceClient.get_klines(...)`.
-  * symbol: símbolo del activo (e.g., "BTCUSDT") que se grabará en cada Bar.
-
-Validaciones:
--------------
-- Índice debe ser **tz-aware UTC** (evita errores de huso horario aguas abajo).
-- Columnas requeridas presentes.
-- Orden temporal ascendente y sin duplicados.
-- Cast explícito a float64 por consistencia numérica.
+Contrato esperado del DataFrame de entrada (mínimo):
+- Columnas numéricas: open, high, low, close, volume
+- Marca temporal: preferiblemente índice DatetimeIndex UTC; si no,
+  se usará la columna `open_time` (milisegundos desde epoch) o `time`.
 
 Salida:
--------
-- Genera objetos `Bar` (dataclass inmutable con campos: ts, open, high, low, close, volume, symbol)
-  uno por cada fila del DataFrame, *iterando en orden temporal*.
+- Iterador de objetos `Bar` (definidos en core.py) en orden cronológico.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable
 
+import numpy as np
 import pandas as pd
 
 from .core import Bar
 
 # --------------------------------------------------------------------------------------
-# Utilidades internas (pequeñas comprobaciones defensivas para robustez del pipeline)
+# Helpers de normalización temporal
 # --------------------------------------------------------------------------------------
 
-_REQUIRED_COLS = {"open", "high", "low", "close", "volume"}
+
+def _ensure_datetime_index_utc(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Garantiza que `df`:
+      1) Tiene un DatetimeIndex.
+      2) Está en zona horaria UTC.
+      3) Está ordenado por índice.
+
+    Estrategia:
+    - Si el índice YA es DatetimeIndex:
+        - Si no tiene tz, localizamos a UTC.
+        - Si tiene tz, convertimos a UTC.
+    - Si NO es DatetimeIndex:
+        - Si existe 'open_time' → interpretamos como milisegundos desde epoch.
+        - Si existe 'time'      → intentamos parsear como datetime.
+        - Si no existe ninguna → error claro.
+    """
+    if isinstance(df.index, pd.DatetimeIndex):
+        # Asegurar tz UTC
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        else:
+            df.index = df.index.tz_convert("UTC")
+        return df.sort_index()
+
+    # No es DatetimeIndex: intentamos construirlo
+    if "open_time" in df.columns:
+        idx = pd.to_datetime(df["open_time"].astype(np.int64), unit="ms", utc=True)
+        df = df.set_index(idx)
+    elif "time" in df.columns:
+        # Si 'time' ya viene como datetime64[ns], lo respetamos; si es str, parseamos.
+        idx = pd.to_datetime(df["time"], utc=True, errors="coerce")
+        if idx.isna().any():
+            raise ValueError("No se pudo parsear 'time' a datetime (contiene valores inválidos).")
+        df = df.set_index(idx)
+    else:
+        raise ValueError(
+            "El DataFrame no tiene DatetimeIndex ni columnas 'open_time' o 'time' "
+            "para construir el índice temporal."
+        )
+
+    # Asegurar orden y tz
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise AssertionError("Fallo interno: no se pudo construir DatetimeIndex.")
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    else:
+        df.index = df.index.tz_convert("UTC")
+    return df.sort_index()
 
 
-def _ensure_required_columns(df: pd.DataFrame) -> None:
-    """
-    Verifica que el DataFrame contiene las columnas OHLCV mínimas.
-    Lanza ValueError con detalle si falta algo.
-    """
-    missing = _REQUIRED_COLS - set(df.columns)
+def _validate_ohlcv_columns(df: pd.DataFrame) -> None:
+    """Valida que existan las columnas mínimas para OHLCV."""
+    required = {"open", "high", "low", "close", "volume"}
+    missing = required.difference(df.columns)
     if missing:
-        raise ValueError(f"El DataFrame del feed no tiene columnas requeridas: {sorted(missing)}")
+        raise ValueError(f"Faltan columnas OHLCV requeridas: {sorted(missing)}")
 
 
-def _ensure_tz_aware_utc(df: pd.DataFrame) -> None:
+# --------------------------------------------------------------------------------------
+# Iterador principal
+# --------------------------------------------------------------------------------------
+
+
+def iter_bars(df: pd.DataFrame, symbol: str, tz_aware_required: bool = True) -> Iterable[Bar]:
     """
-    Exige que el índice sea tz-aware (idealmente UTC). Si no lo es, avisamos.
+    Convierte un DataFrame OHLCV en un iterador de `Bar`.
+
+    Parámetros:
+      - df: DataFrame con columnas [open, high, low, close, volume] y marca temporal.
+      - symbol: símbolo asociado a las barras (ej. 'BTCUSDT').
+      - tz_aware_required: si True, fuerza índice tz-aware UTC (por defecto True).
+
+    Comportamiento:
+      - Si el índice no es DatetimeIndex (o no tiene tz), se normaliza a UTC.
+      - Valida columnas OHLCV.
+      - Emite Bar ordenadas cronológicamente.
     """
-    if df.index.tz is None:  # pandas marca tz-aware en .tz
-        raise ValueError("El índice del DataFrame debe ser tz-aware (UTC).")
+    df_local = df.copy()
 
+    # 1) Normalizar índice temporal
+    if tz_aware_required:
+        df_local = _ensure_datetime_index_utc(df_local)
+    else:
+        # Aun si no forzamos tz-aware, si no es DatetimeIndex lo intentamos construir
+        if not isinstance(df_local.index, pd.DatetimeIndex):
+            df_local = _ensure_datetime_index_utc(df_local)
 
-def _ensure_sorted_unique_index(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ordena por índice temporal de forma ascendente y elimina duplicados.
-    Devuelve una *vista* (o copia) ordenada y sin duplicados.
-    """
-    # Elimina duplicados (si un openTime aparece dos veces, nos quedamos con la primera)
-    df2 = df[~df.index.duplicated(keep="first")]
-    # Ordena temporalmente por las dudas (el cliente ya lo suele traer ordenado)
-    df2 = df2.sort_index()
-    return df2
+    # 2) Validar columnas OHLCV
+    _validate_ohlcv_columns(df_local)
 
-
-def _ensure_float64(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Fuerza dtypes float64 en las columnas OHLCV, para consistencia en cálculos/formatos.
-    """
-    return df.astype(
-        {
-            "open": "float64",
-            "high": "float64",
-            "low": "float64",
-            "close": "float64",
-            "volume": "float64",
-        },
-        copy=False,
-    )
-
-
-# ------------------------------------------------------
-# API pública: generador de barras a partir de un DataFrame
-# ------------------------------------------------------
-
-
-def iter_bars(df: pd.DataFrame, symbol: str) -> Iterator[Bar]:
-    """
-    Itera un DataFrame OHLCV y va generando `Bar` uno a uno.
-
-    Parámetros
-    ----------
-    df : pd.DataFrame
-        DataFrame con índice temporal tz-aware (UTC) y columnas
-        ["open","high","low","close","volume"] en float.
-        Suele provenir de `BinanceClient.get_klines(...)`.
-    symbol : str
-        Símbolo del activo (ej., "BTCUSDT"). Se incrusta en cada Bar.
-
-    Yields
-    ------
-    Bar
-        Dataclass inmutable con:
-          - ts:   pd.Timestamp (UTC)
-          - open, high, low, close, volume: float
-          - symbol: str
-    """
-    # 1) Validaciones básicas
-    _ensure_required_columns(df)
-    _ensure_tz_aware_utc(df)
-
-    # 2) Normalizaciones de seguridad
-    df = _ensure_sorted_unique_index(df)
-    df = _ensure_float64(df)
-
-    # 3) Iteración en orden temporal, creando `Bar` por fila
-    #    - iterrows() devuelve (index, row)
-    #    - row["col"] es un escalar; convertimos a float explícito
-    for ts, row in df.iterrows():
+    # 3) Iterar en orden cronológico
+    #    Usamos .itertuples para minimizar overhead.
+    for ts, row in df_local.sort_index().iterrows():
         yield Bar(
-            ts=ts,  # pd.Timestamp tz-aware (UTC)
-            symbol=symbol,  # "BTCUSDT" u otro
-            open=float(row["open"]),  # cast defensivo
+            symbol=symbol,
+            ts=ts.to_pydatetime(),  # datetime (tz-aware UTC)
+            open=float(row["open"]),
             high=float(row["high"]),
             low=float(row["low"]),
             close=float(row["close"]),
