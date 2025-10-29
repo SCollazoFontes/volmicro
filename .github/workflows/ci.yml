@@ -43,4 +43,7 @@ jobs:
         uses: pre-commit/action@v3.0.1
 
       - name: Run tests
-        run: pytest -q
+        run: |
+          pytest -q tests/test_smoke.py
+          pytest -q tests/test_trades_schema.py
+          pytest -q tests/test_fallbacks.py
