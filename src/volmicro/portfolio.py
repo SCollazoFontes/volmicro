@@ -620,6 +620,7 @@ class Portfolio:
                 "tickSize_used",
                 "stepSize_used",
                 "minNotional_used",
+                "pnl",
             ]
             return pd.DataFrame(columns=base_cols + extra_cols)
 
@@ -637,6 +638,10 @@ class Portfolio:
                 if c not in df.columns:
                     df[c] = None
             df = df[base_cols]
+
+        # pnl = realized_pnl por convención (BUY=0, SELL=realized)
+        if "realized_pnl" in df.columns and "pnl" not in df.columns:
+            df["pnl"] = df["realized_pnl"].fillna(0.0)
 
         return df
 
